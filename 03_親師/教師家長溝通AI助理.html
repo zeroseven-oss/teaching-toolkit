@@ -1,0 +1,1755 @@
+{教師家長溝通AI助理_尊榮版_離線版.html}
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>教師家長溝通 AI 助理 (尊榮版) - 離線獨立版</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0"
+      }
+    }
+  </script>
+
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* 覆蓋 Tailwind 的 h-screen，迫使其繼承外層 Flex 容器高度，避免出現雙重捲軸 */
+    .h-screen { height: 100% !important; max-height: 100% !important; }
+    body, html { margin: 0; padding: 0; height: 100dvh; overflow: hidden; background-color: #FDF0E3; }
+  </style>
+
+  <script>
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      let [resource, config] = args;
+      // 只要偵測到是打向 Gemini 的 API，就自動介入處理
+      if (typeof resource === 'string' && resource.includes('generativelanguage.googleapis.com')) {
+        const storedKey = localStorage.getItem('gemini_api_key');
+        if (!storedKey) {
+          // 若無 Key，觸發全域 Toast 提醒，並終止請求 (非阻塞畫面)
+          window.dispatchEvent(new CustomEvent('show-api-toast', { detail: '請先在上方設定 Gemini API Key 才能使用 AI 功能喔！' }));
+          return Promise.reject(new Error("API Key is missing"));
+        }
+        // 動態將 Key 注入到 URL 中
+        const url = new URL(resource);
+        url.searchParams.set('key', storedKey);
+        args[0] = url.toString();
+      }
+      return originalFetch.apply(this, args);
+    };
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+import { createRoot } from 'react-dom/client';
+
+// ==============================================================
+// 👇👇👇 請打開您的 .txt 檔案，把「所有內容」全選複製並直接貼在下方 👇👇👇
+// ==============================================================
+import React, { useState, useEffect } from 'react';
+import { 
+  MessageSquare, PenTool, ShieldAlert, FileText, 
+  Copy, Check, AlertTriangle, 
+  User, BookOpen, AlertCircle, X, Heart, Search, Trash2, RefreshCw, Sparkles, Megaphone, 
+  Lightbulb, Smartphone, CheckSquare, ChevronRight, Users, AlignLeft, ListOrdered, Loader2,
+  ClipboardList, Download, Save, Award
+} from 'lucide-react';
+
+// --- API Helper ---
+const apiKey = ""; // 系統會在執行環境自動注入
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+// --- Helper Functions ---
+const copyToClipboard = (text, onSuccess) => {
+  const textArea = document.createElement("textarea");
+  textArea.value = typeof text === 'object' ? JSON.stringify(text, null, 2) : text;
+  textArea.style.top = "0";
+  textArea.style.left = "0";
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  
+  try {
+    document.execCommand('copy');
+    if (onSuccess) onSuccess();
+  } catch (err) {
+    console.error('複製失敗:', err);
+  }
+  
+  document.body.removeChild(textArea);
+};
+
+const downloadTxt = (text, filename) => {
+  const element = document.createElement("a");
+  const file = new Blob([text], {type: 'text/plain;charset=utf-8'});
+  element.href = URL.createObjectURL(file);
+  element.download = filename;
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+};
+
+// 新增：清除 Markdown 星號的輔助函式
+const cleanAsterisks = (text) => {
+  if (typeof text !== 'string') return text;
+  return text.replace(/\*/g, '');
+};
+
+// 新增：輔導紀錄專用的強制排版過濾器 (確保標題絕對會換行)
+const formatRecordText = (text) => {
+  if (typeof text !== 'string') return text;
+  // 1. 清除星號
+  let formatted = text.replace(/\*/g, '');
+  // 2. 確保【標題】前方有兩個換行 (如果它不在字串開頭，且前面沒有換行)
+  formatted = formatted.replace(/([^\n])(\s*【[^】]+】)/g, '$1\n\n$2');
+  // 3. 確保【標題】後方有一個換行 (如果後面直接接文字，而不是換行)
+  formatted = formatted.replace(/(【[^】]+】\s*)([^\n])/g, '$1\n$2');
+  // 4. 清理可能產生過多的連續空行
+  formatted = formatted.replace(/\n{3,}/g, '\n\n');
+  return formatted.trim();
+};
+
+// --- Custom Hook: Local Storage ---
+function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      return initialValue;
+    }
+  });
+
+  const setValue = (value) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {
+      console.log(error);
+    }
+  };
+  return [storedValue, setValue];
+}
+
+// --- Gemini API Helper with Retry ---
+const fetchFromGemini = async (prompt, schema) => {
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: schema
+    }
+  };
+
+  const delays = [1000, 2000, 4000, 8000];
+  let lastError;
+
+  for (let i = 0; i <= 4; i++) {
+    try {
+      const response = await fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error("No text in response");
+      
+      return JSON.parse(text);
+    } catch (error) {
+      lastError = error;
+      if (i < 4) await new Promise(resolve => setTimeout(resolve, delays[i]));
+    }
+  }
+  throw lastError;
+};
+
+// --- Global Custom Styles (for scrollbars) ---
+const globalStyles = `
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: #F7D8BA; border-radius: 10px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #F4A261; }
+`;
+
+// --- Main Application Component ---
+export default function TeacherAIAssistant() {
+  const [activeTab, setActiveTab] = useLocalStorage('teacher_ai_activeTab', 'analyze');
+  const [role, setRole] = useLocalStorage('teacher_ai_role', 'homeroom');
+  const [counselingInitialData, setCounselingInitialData] = useState(null);
+
+  const handleConvertToCounseling = (data) => {
+    setCounselingInitialData(data);
+    setActiveTab('counseling');
+  };
+
+  return (
+    <>
+      <style>{globalStyles}</style>
+      <div className="flex h-screen bg-gradient-to-br from-[#FFF9F5] to-[#FDF0E3] font-sans text-[#5c4d43] overflow-hidden selection:bg-[#F4A261] selection:text-white custom-scrollbar">
+        
+        {/* --- Desktop Sidebar --- */}
+        <div className="hidden md:flex w-64 bg-white/80 backdrop-blur-xl flex-col shadow-[4px_0_24px_rgb(138,90,68,0.06)] border-r border-[#F7D8BA]/60 z-10 relative">
+          <div className="p-5 md:p-6 border-b border-[#F7D8BA]/40 bg-gradient-to-b from-[#FFF9F5] to-transparent">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="bg-gradient-to-br from-[#F4A261] to-[#E76F51] p-2.5 rounded-xl shadow-md shrink-0 border border-white/40">
+                <Heart className="w-6 h-6 text-white fill-white" />
+              </div>
+              <h1 className="text-[15px] font-extrabold text-[#8A5A44] leading-snug tracking-wide">
+                親師溝通與輔導<br/>紀錄整合系統
+              </h1>
+            </div>
+            <div className="inline-flex items-center justify-center gap-1.5 bg-white text-[#D65A31] px-3 py-1.5 rounded-lg text-[12px] font-extrabold tracking-widest border border-[#F7D8BA] shadow-sm w-full">
+              <Sparkles size={14} className="text-[#F4A261]" />
+              公告・評語生成助手
+            </div>
+          </div>
+
+          <nav className="flex-1 px-4 space-y-1.5 mt-3">
+            <SidebarItem icon={<MessageSquare size={18} />} label="家長訊息判讀" isActive={activeTab === 'analyze'} onClick={() => setActiveTab('analyze')} />
+            <SidebarItem icon={<PenTool size={18} />} label="我的訊息潤飾" isActive={activeTab === 'polish'} onClick={() => setActiveTab('polish')} />
+            <SidebarItem icon={<ClipboardList size={18} />} label="輔導紀錄撰寫" isActive={activeTab === 'counseling'} onClick={() => setActiveTab('counseling')} />
+            <SidebarItem icon={<Award size={18} />} label="學生評語產生器" isActive={activeTab === 'reportCard'} onClick={() => setActiveTab('reportCard')} />
+            <SidebarItem icon={<FileText size={18} />} label="常見情境模板" isActive={activeTab === 'templates'} onClick={() => setActiveTab('templates')} />
+            <SidebarItem icon={<Megaphone size={18} />} label="班級公告" isActive={activeTab === 'announcement'} onClick={() => setActiveTab('announcement')} />
+            <SidebarItem icon={<Users size={18} />} label="教職員公告" isActive={activeTab === 'staff'} onClick={() => setActiveTab('staff')} />
+          </nav>
+
+          <div className="mt-auto p-5 border-t border-[#F7D8BA]/40 bg-gradient-to-t from-[#FFE8D6]/30 to-transparent shrink-0">
+            <div className="flex items-center justify-center gap-1.5 text-xs font-bold text-[#A47E60]/80">
+              <Save size={14} className="text-emerald-500 animate-pulse" /> 自動存檔開啟中
+            </div>
+          </div>
+        </div>
+
+        {/* --- Mobile Bottom Navigation --- */}
+        <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-[#F7D8BA]/50 flex items-center h-[72px] z-50 shadow-[0_-8px_30px_rgb(138,90,68,0.08)] pb-safe overflow-x-auto px-2 custom-scrollbar gap-2">
+          <MobileNavItem icon={<MessageSquare size={20} />} label="判讀" isActive={activeTab === 'analyze'} onClick={() => setActiveTab('analyze')} />
+          <MobileNavItem icon={<PenTool size={20} />} label="潤飾" isActive={activeTab === 'polish'} onClick={() => setActiveTab('polish')} />
+          <MobileNavItem icon={<ClipboardList size={20} />} label="紀錄" isActive={activeTab === 'counseling'} onClick={() => setActiveTab('counseling')} />
+          <MobileNavItem icon={<Award size={20} />} label="評語" isActive={activeTab === 'reportCard'} onClick={() => setActiveTab('reportCard')} />
+          <MobileNavItem icon={<FileText size={20} />} label="模板" isActive={activeTab === 'templates'} onClick={() => setActiveTab('templates')} />
+          <MobileNavItem icon={<Megaphone size={20} />} label="公告" isActive={activeTab === 'announcement'} onClick={() => setActiveTab('announcement')} />
+        </div>
+
+        {/* --- Main Content --- */}
+        <div className="flex-1 flex flex-col overflow-hidden pb-[72px] md:pb-0 relative">
+          <header className="bg-white/60 backdrop-blur-md border-b border-[#F7D8BA]/40 px-5 md:px-8 py-4 flex justify-between items-center sticky top-0 z-40">
+            <h2 className="text-xl md:text-2xl font-extrabold text-[#8A5A44] truncate mr-4 flex items-center gap-2">
+              {activeTab === 'analyze' && <><MessageSquare className="text-[#F4A261] hidden md:block" size={24}/> 訊息判讀與回覆</>}
+              {activeTab === 'polish' && <><PenTool className="text-[#F4A261] hidden md:block" size={24}/> 主動訊息潤飾</>}
+              {activeTab === 'counseling' && <><ClipboardList className="text-[#F4A261] hidden md:block" size={24}/> 輔導紀錄撰寫</>}
+              {activeTab === 'reportCard' && <><Award className="text-[#F4A261] hidden md:block" size={24}/> 學生評語產生器</>}
+              {activeTab === 'templates' && <><FileText className="text-[#F4A261] hidden md:block" size={24}/> 情境模板庫</>}
+              {activeTab === 'announcement' && <><Megaphone className="text-[#F4A261] hidden md:block" size={24}/> 班級公告產生器</>}
+              {activeTab === 'staff' && <><Users className="text-[#F4A261] hidden md:block" size={24}/> 教職員內部布達</>}
+            </h2>
+            
+            <div className="flex items-center gap-1.5 text-sm text-[#8A5A44] bg-white px-3 py-1.5 md:px-4 md:py-2 rounded-full font-bold shadow-sm border border-[#F7D8BA]/80 shrink-0 transition-all hover:shadow-md cursor-pointer group">
+              <User size={16} className="hidden md:block text-[#F4A261] group-hover:scale-110 transition-transform" />
+              <select 
+                className="bg-transparent border-none outline-none cursor-pointer font-bold text-[#8A5A44] text-xs md:text-sm appearance-none pr-2"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+              >
+                <option value="homeroom">導師模式</option>
+                <option value="subject">科任模式</option>
+                <option value="afterschool">課後班模式</option>
+                <option value="admin">行政模式</option>
+              </select>
+            </div>
+          </header>
+
+          <main className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth w-full relative custom-scrollbar">
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'analyze' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <AnalyzeView role={role} onConvertToCounseling={handleConvertToCounseling} />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'polish' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <PolishView role={role} onConvertToCounseling={handleConvertToCounseling} />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'counseling' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <CounselingRecordView role={role} initialData={counselingInitialData} />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'reportCard' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <ReportCardView role={role} />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'templates' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <TemplatesView />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'announcement' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <AnnouncementView role={role} />
+            </div>
+            <div className={`h-full transition-opacity duration-300 ${activeTab === 'staff' ? 'opacity-100 block animate-in fade-in' : 'opacity-0 hidden'}`}>
+              <StaffView role={role} />
+            </div>
+          </main>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ==========================================
+// 0. 學生評語產生器 (ReportCardView)
+// ==========================================
+function ReportCardView({ role }) {
+  const [strengths, setStrengths] = useLocalStorage('ai_rc_strengths', '');
+  const [weaknesses, setWeaknesses] = useLocalStorage('ai_rc_weaknesses', '');
+  const [tone, setTone] = useLocalStorage('ai_rc_tone', '溫暖鼓勵 (多用正向語言)');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [result, setResult] = useLocalStorage('ai_rc_result', null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [regeneratingKeys, setRegeneratingKeys] = useState({});
+
+  const STRENGTH_OPTIONS = [
+    { label: '學習態度', options: ['上課專心聽講', '踴躍舉手發言', '作業用心按時繳交', '學習動機強烈', '具備探究精神', '筆記工整詳實', '能主動發問', '喜愛廣泛閱讀', '能舉一反三'] },
+    { label: '品格表現', options: ['熱心助人', '誠實負責', '擔任幹部盡責', '尊師重道', '守秩序有禮貌', '懂得感恩', '做事細心踏實', '有正義感'] },
+    { label: '人際互動', options: ['樂於與人分享', '具備團隊合作精神', '善於傾聽他人', '具備領導能力', '能同理他人感受', '人緣極佳', '能化解同學衝突'] },
+    { label: '日常生活', options: ['打掃工作認真', '愛物惜物', '注重個人衛生', '確實遵守班級常規', '作息規律', '愛護公物'] }
+  ];
+
+  const WEAKNESS_OPTIONS = [
+    { label: '學習狀況', options: ['上課容易分心', '作業時常缺交或遲交', '訂正不夠確實', '學習較為被動', '遇到困難易放棄', '需加強時間管理', '粗心大意', '字體需再端正', '需提升閱讀理解力'] },
+    { label: '行為常規', options: ['上課愛講話', '偶會遲到早退', '座位周遭較凌亂', '需留意個人衛生與服儀', '容易衝動行事', '較常忘記帶學用品', '喜歡離開座位'] },
+    { label: '人際與情緒', options: ['偶有人際衝突', '挫折忍受力較低', '需學習控制情緒', '表達意見較直接', '需多同理他人感受', '參與團體活動較被動', '容易與同學計較'] }
+  ];
+
+  const appendText = (setter, text) => {
+    setter(prev => prev ? prev + '、' + text : text);
+  };
+
+  const handleStrengthSelect = (e) => {
+    const val = e.target.value;
+    if (val) {
+      appendText(setStrengths, val);
+      e.target.value = ""; 
+    }
+  };
+
+  const handleWeaknessSelect = (e) => {
+    const val = e.target.value;
+    if (val) {
+      appendText(setWeaknesses, val);
+      e.target.value = ""; 
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!strengths.trim() && !weaknesses.trim()) {
+      setErrorMsg('請至少填寫一項優點或待改進事項喔！');
+      return;
+    }
+    setIsGenerating(true);
+    setResult(null);
+    setErrorMsg('');
+
+    try {
+      const prompt = `你是一位經驗豐富、充滿教育熱忱的${getRoleName(role)}。請幫我撰寫學生的「期末/期中綜合表現評語」或「聯絡簿精要小語」。
+      【學生特質】
+      - 優點/亮點：${strengths || '無特別提及'}
+      - 待改進/建議：${weaknesses || '無特別提及'}
+      - 期望語氣：${tone}
+
+      【撰寫要求】
+      1. 將上述條列式的特質，擴寫轉化為專業、流暢、得體的教育用語。
+      2. 必須採用「三明治回饋法」（先肯定優點 -> 再提出建議改進 -> 最後給予正向期許）。
+      3. 避免過度嚴厲的批評，以「正向期許」和「具體建議」代替指責。
+      4. 絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。
+      
+      請回傳 JSON 格式，包含三個不同長度與風格的版本：
+      1. warm: 溫暖細膩版（字數約 80-120 字，語氣充滿愛與支持，細節描述多）。
+      2. objective: 專業客觀版（字數約 80-120 字，語氣中立，著重具體事實與改善策略）。
+      3. concise: 簡明扼要版（字數約 40-60 字以內，精煉濃縮，適合字數限制嚴格的校務系統）。`;
+
+      const schema = {
+        type: "OBJECT",
+        properties: {
+          warm: { type: "STRING" },
+          objective: { type: "STRING" },
+          concise: { type: "STRING" }
+        },
+        required: ["warm", "objective", "concise"]
+      };
+
+      const parsedData = await fetchFromGemini(prompt, schema);
+      setResult(parsedData);
+    } catch (e) {
+      setErrorMsg("系統目前較為繁忙或發生錯誤，請稍後再試。");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleRegenerate = async (key, typeName) => {
+    setRegeneratingKeys(prev => ({ ...prev, [key]: true }));
+    try {
+      let lengthReq = key === 'concise' ? '字數約 40-60 字以內，極度精要' : '字數約 80-120 字';
+      const prompt = `你是一位經驗豐富的${getRoleName(role)}。請幫我重新撰寫學生的綜合表現評語。
+      優點：${strengths} | 待改進：${weaknesses}
+      要求：請撰寫全新的【${typeName}】版本。限制：${lengthReq}。採用三明治回饋法。絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。`;
+      
+      const schema = { type: "OBJECT", properties: { reply: { type: "STRING" } }, required: ["reply"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      if (parsedData?.reply) setResult(prev => ({ ...prev, [key]: parsedData.reply }));
+    } catch (error) { console.error(error); } finally { setRegeneratingKeys(prev => ({ ...prev, [key]: false })); }
+  };
+
+  const handleClear = () => { 
+    if(window.confirm('確定要清空嗎？')){setStrengths(''); setWeaknesses(''); setResult(null); setErrorMsg('');} 
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA] p-5 md:p-6 flex flex-col h-full">
+          <div className="flex justify-between items-center mb-4 border-b border-[#F7D8BA]/60 pb-3">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg"><Award className="text-[#F4A261]" size={22} />設定學生特質</label>
+            {(strengths || weaknesses) && <button onClick={handleClear} className="text-[#A47E60] hover:text-[#E76F51] flex items-center gap-1 text-sm font-bold transition-colors bg-[#FFF9F5] px-2.5 py-1 rounded-full border border-[#F7D8BA]/50"><Trash2 size={14} /> 清空</button>}
+          </div>
+          
+          <div className="space-y-5 flex-1 overflow-y-auto pr-1 custom-scrollbar">
+            <div className="bg-[#F0FDF4]/50 border border-emerald-200/60 p-4 rounded-2xl">
+              <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center gap-2 mb-3">
+                <label className="block text-sm font-extrabold text-emerald-700 shrink-0">🌟 優點 / 值得肯定之處</label>
+                <select onChange={handleStrengthSelect} className="bg-white border border-emerald-200 text-emerald-700 text-xs font-bold rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-emerald-400/50 cursor-pointer shadow-sm w-full xl:w-auto truncate">
+                  <option value="">快速加入特質...</option>
+                  {STRENGTH_OPTIONS.map((group, idx) => (
+                    <optgroup key={idx} label={`【 ${group.label} 】`} style={{ backgroundColor: '#ecfdf5', color: '#047857', fontWeight: 'bold' }}>
+                      {group.options.map(opt => <option key={opt} value={opt} style={{ backgroundColor: '#ffffff', color: '#5c4d43', fontWeight: 'normal' }}>{opt}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <textarea className="w-full bg-white border border-emerald-200/80 rounded-xl p-3 focus:ring-2 focus:ring-emerald-400/30 outline-none resize-none min-h-[80px] text-[#5c4d43] shadow-sm text-sm custom-scrollbar" placeholder="可從上方選單快速加入，或手動輸入優良表現，例如：負責任、字體工整..." value={strengths} onChange={(e) => setStrengths(e.target.value)} />
+            </div>
+
+            <div className="bg-[#FFF5F5]/50 border border-rose-200/60 p-4 rounded-2xl">
+              <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center gap-2 mb-3">
+                <label className="block text-sm font-extrabold text-rose-700 shrink-0">🌱 待改進 / 需引導之處</label>
+                <select onChange={handleWeaknessSelect} className="bg-white border border-rose-200 text-rose-700 text-xs font-bold rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-rose-400/50 cursor-pointer shadow-sm w-full xl:w-auto truncate">
+                  <option value="">快速加入特質...</option>
+                  {WEAKNESS_OPTIONS.map((group, idx) => (
+                    <optgroup key={idx} label={`【 ${group.label} 】`} style={{ backgroundColor: '#fff1f2', color: '#e11d48', fontWeight: 'bold' }}>
+                      {group.options.map(opt => <option key={opt} value={opt} style={{ backgroundColor: '#ffffff', color: '#5c4d43', fontWeight: 'normal' }}>{opt}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <textarea className="w-full bg-white border border-rose-200/80 rounded-xl p-3 focus:ring-2 focus:ring-rose-400/30 outline-none resize-none min-h-[80px] text-[#5c4d43] shadow-sm text-sm custom-scrollbar" placeholder="可從上方選單快速加入，或手動輸入需要加強的部分，例如：常忘記帶作業..." value={weaknesses} onChange={(e) => setWeaknesses(e.target.value)} />
+            </div>
+
+            <div className="mb-2">
+              <label className="block text-xs font-extrabold text-[#A47E60] mb-2">希望的總結語氣</label>
+              <div className="flex flex-col gap-2">
+                {['溫暖鼓勵 (多用正向語言)', '嚴謹期許 (強調紀律與未來表現)', '客觀平實 (僅陳述具體事實)'].map(t => (
+                  <label key={t} className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 cursor-pointer transition-all ${tone === t ? 'bg-[#FFE8D6] border-[#F4A261] text-[#E76F51] shadow-sm font-bold' : 'bg-white border-[#F7D8BA]/50 text-[#A47E60] hover:bg-[#FFF9F5]'}`}>
+                    <input type="radio" name="tone" checked={tone === t} onChange={() => setTone(t)} className="w-4 h-4 text-[#F4A261] focus:ring-[#F4A261] border-[#F7D8BA]" />
+                    <span className="text-sm">{t}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <button onClick={handleGenerate} disabled={isGenerating || (!strengths.trim() && !weaknesses.trim())} className="mt-4 w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:from-[#E9C46A]/50 disabled:text-white/70 text-white font-bold py-3.5 md:py-4 rounded-2xl transition-all shadow-md flex justify-center items-center gap-2 text-lg active:scale-[0.98] shrink-0">
+            {isGenerating ? <><Loader2 className="animate-spin" size={24} /> AI 撰寫評語中...</> : <><Sparkles size={24} /> 一鍵生成期末評語</>}
+          </button>
+        </div>
+      </div>
+      
+      <div className="lg:col-span-7 flex flex-col gap-4 h-[calc(100vh-200px)] md:h-auto overflow-y-auto pr-1 custom-scrollbar">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 md:p-5 text-rose-700 flex items-center gap-3 shadow-sm"><AlertCircle size={24} className="shrink-0" /><p className="font-bold text-sm md:text-base">{errorMsg}</p></div>}
+        
+        {!result && !isGenerating && !errorMsg ? (
+           <div className="bg-white/40 rounded-3xl border-2 border-[#F7D8BA] border-dashed h-full min-h-[350px] flex flex-col items-center justify-center text-[#A47E60] p-8 text-center backdrop-blur-sm animate-in fade-in">
+             <div className="bg-gradient-to-br from-[#FFE8D6] to-[#F7D8BA] p-5 rounded-full mb-5 shadow-inner"><Award size={48} className="text-[#E76F51]" /></div>
+             <p className="font-extrabold text-xl text-[#8A5A44]">期末評語寫到詞窮了？</p>
+             <p className="mt-3 text-sm md:text-base font-medium leading-relaxed max-w-xs">只要點選左側的優缺點標籤，AI 就會運用三明治說話術，幫您把大白話轉成專業又溫暖的評語喔！</p>
+           </div>
+        ) : isGenerating ? (
+           <div className="bg-white/80 rounded-3xl border border-[#F7D8BA] h-full min-h-[350px] flex flex-col items-center justify-center text-[#F4A261] p-8 text-center shadow-sm">
+             <Loader2 size={48} className="animate-spin mb-4" />
+             <p className="font-extrabold text-lg animate-pulse">正在為您斟酌最完美的教育詞彙...</p>
+           </div>
+        ) : (
+          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
+            <div className="bg-[#2A3744] text-white px-5 py-3 rounded-t-2xl flex items-center gap-3 shadow-sm z-10 border-b-4 border-[#F4A261]">
+              <div className="w-8 h-8 bg-white/10 rounded-full flex items-center justify-center font-bold backdrop-blur-sm"><FileText size={16}/></div>
+              <div><h3 className="font-bold text-[15px] leading-tight">校務行政系統預覽</h3><p className="text-[11px] text-white/60">期末綜合表現評語欄位</p></div>
+            </div>
+            
+            <div className="bg-white/60 backdrop-blur-sm p-4 md:p-6 rounded-b-3xl shadow-sm border border-[#F7D8BA]/60 space-y-5">
+              {result?.warm && <DocCard type="溫暖細膩版 (推薦寫入聯絡簿)" text={result.warm} onRegenerate={() => handleRegenerate('warm', '溫暖細膩版')} isRegenerating={regeneratingKeys['warm']} />}
+              {result?.objective && <DocCard type="專業客觀版 (推薦寫入成績單)" text={result.objective} onRegenerate={() => handleRegenerate('objective', '專業客觀版')} isRegenerating={regeneratingKeys['objective']} />}
+              {result?.concise && <DocCard type="簡明扼要版 (字數精簡)" text={result.concise} onRegenerate={() => handleRegenerate('concise', '簡明扼要版')} isRegenerating={regeneratingKeys['concise']} />}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 評語專用的文件卡片 UI
+function DocCard({ type, text, onRegenerate, isRegenerating }) {
+  const [copied, setCopied] = useState(false);
+  // 清除所有星號
+  const displayText = typeof text === 'object' ? JSON.stringify(text) : text;
+  const cleanText = cleanAsterisks(displayText);
+  
+  const handleCopy = () => { copyToClipboard(cleanText, () => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-[#F7D8BA]/60 overflow-hidden flex flex-col group hover:shadow-md transition-all">
+      <div className="bg-gradient-to-r from-[#FFF9F5] to-white px-4 py-3 border-b border-[#F7D8BA]/40 flex justify-between items-center">
+        <span className="font-extrabold text-[#8A5A44] text-sm flex items-center gap-1.5">
+          <Award size={16} className="text-[#F4A261]"/> {type}
+        </span>
+        <div className="flex items-center gap-1.5">
+           {onRegenerate && (
+            <button onClick={onRegenerate} disabled={isRegenerating} className="flex items-center gap-1 text-[11px] font-bold px-2 py-1.5 hover:bg-[#FFE8D6] rounded-lg transition-colors text-[#A47E60] border border-transparent hover:border-[#F7D8BA] disabled:opacity-50" title="換個說法">
+              <RefreshCw size={12} className={isRegenerating ? "animate-spin text-[#F4A261]" : ""} /> 重寫
+            </button>
+          )}
+          <button onClick={handleCopy} className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1.5 rounded-lg transition-colors border ${copied ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'hover:bg-[#FFE8D6] border-transparent hover:border-[#F7D8BA] text-[#A47E60]'}`} title="複製">
+            {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? '已複製' : '複製'}
+          </button>
+        </div>
+      </div>
+      <div className="p-4 md:p-5 relative">
+        <div className="absolute top-0 left-0 w-1 h-full bg-[#F4A261]/20"></div>
+        <p className="text-[14px] md:text-[15px] leading-loose font-medium text-[#4a3f35] whitespace-pre-wrap tracking-wide pl-2">{cleanText}</p>
+      </div>
+    </div>
+  );
+}
+
+
+// ==========================================
+// 1. 輔導紀錄撰寫 (CounselingRecordView)
+// ==========================================
+function CounselingRecordView({ role, initialData }) {
+  const [dateTime, setDateTime] = useLocalStorage('ai_cr_date', '');
+  const [period, setPeriod] = useLocalStorage('ai_cr_period', '');
+  const [method, setMethod] = useLocalStorage('ai_cr_method', '');
+  const [target, setTarget] = useLocalStorage('ai_cr_target', '');
+  const [targetOther, setTargetOther] = useLocalStorage('ai_cr_targetOther', '');
+  const [sources, setSources] = useLocalStorage('ai_cr_sources', []);
+  const [sourceOther, setSourceOther] = useLocalStorage('ai_cr_sourceOther', '');
+  const [summary, setSummary] = useLocalStorage('ai_cr_summary', '');
+  const [action, setAction] = useLocalStorage('ai_cr_action', '');
+  const [response, setResponse] = useLocalStorage('ai_cr_response', '');
+  const [followUp, setFollowUp] = useLocalStorage('ai_cr_followUp', 'no');
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  // 更新：改為儲存包含三個版本的物件
+  const [resultObj, setResultObj] = useLocalStorage('ai_cr_result_obj', null);
+  const [selectedLength, setSelectedLength] = useLocalStorage('ai_cr_selected_length', 'standard');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [copied, setCopied] = useState(false);
+  
+  const [showImportSuccess, setShowImportSuccess] = useState(false);
+
+  useEffect(() => {
+    if (initialData) {
+      if (initialData.target) setTarget(initialData.target);
+      if (initialData.sources) setSources(initialData.sources);
+      if (initialData.summary) setSummary(prev => prev ? prev + "\n\n" + initialData.summary : initialData.summary);
+      if (initialData.action) setAction(initialData.action); 
+      
+      setShowImportSuccess(true);
+      setTimeout(() => setShowImportSuccess(false), 5000);
+    }
+  }, [initialData]);
+
+  const periods = ["早自習", "第一節", "第二節", "第三節", "第四節", "午休", "第五節", "第六節", "第七節", "第八節", "下課時間", "課後班時間", "放學時間"];
+  const methods = ["校內面談", "電話訪談", "家庭訪問", "班級觀察", "其它"];
+  const targets = ["學生", "家長", "任課老師", "相關人員(請註明)"];
+  const sourceOptions = ["學生自述", "教師直接觀察", "家長說明", "其他"];
+
+  const handleSourceChange = (option) => {
+    if (sources.includes(option)) {
+      setSources(sources.filter(s => s !== option));
+    } else {
+      setSources([...sources, option]);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!summary.trim()) {
+      setErrorMsg("請至少輸入「事件簡述」才能產生紀錄喔！");
+      return;
+    }
+    
+    setIsGenerating(true);
+    setErrorMsg('');
+
+    try {
+      const currentTarget = target === '相關人員(請註明)' ? `相關人員(${targetOther})` : target;
+      const currentSources = sources.map(s => s === '其他' ? `其他(${sourceOther})` : s).join('、');
+      const followUpText = followUp === 'yes' ? '是，需要追蹤' : '否 / 已結案';
+
+      // 優化：給予 AI 更強烈且具體的排版範本
+      const prompt = `你是一位專業的學校老師與輔導專家。請根據以下教師輸入的原始資料，幫我撰寫一份結構完整、語氣專業且客觀中立的【學生輔導/晤談紀錄】。
+
+      【原始資料】
+      - 日期時間：${dateTime || '未填寫'}
+      - 節次：${period || '未填寫'}
+      - 會談方式：${method || '未填寫'}
+      - 對象：${currentTarget || '未填寫'}
+      - 資訊來源：${currentSources || '未填寫'}
+      - 事件簡述：${summary}
+      - 教師處理與回應：${action || '未填寫'}
+      - 學生/家長回應：${response || '未填寫'}
+      - 後續追蹤：${followUpText}
+
+      【撰寫要求】
+      1. 依據上述提供的欄位，整理成適合直接貼入「校務行政系統」的正式文字紀錄。
+      2. ⚠️ 【極度重要排版規定：強制換行與條列式】：
+         - 絕對不允許把所有內容擠成同一段落！
+         - 每一個大項目（如【基本資料】、【事件簡述】、【處理過程】、【後續追蹤】等）都必須「獨立一行並加上括號標題」。
+         - 標題下方的「所有細節內容」，必須強制「使用條列式（例如 1. 2. 3. 或 - 符號）一點一點列出」，且每一點都要換行。
+      3. 語氣務必客觀中立，陳述事實，避免過度主觀的情緒字眼。
+      4. 絕對純文字輸出，請勿使用 Markdown 星號語法（例如 ** 或 *）。
+
+      【嚴格格式範例】(你的輸出必須長得像這樣，包含真實的換行)：
+      【基本資料】
+      - 日期時間：...
+      - 會談方式：...
+
+      【事件簡述】
+      1. ...
+      2. ...
+
+      【處理過程】
+      1. ...
+
+      【💡 AI 建議輔導策略】
+      1. ...
+      
+      請嚴格遵守排版規定，並回傳 JSON 格式，提供三個不同長度與細節深度的版本（這三個版本內部都必須嚴格採用上述的「換行+條列式」排版，即使是 short 版也必須換行！）：
+      1. short: 簡短版（精簡各欄位內容，保留核心重點，適合快速閱讀與小事件）
+      2. standard: 標準版（結構完整，適度詳盡，為預設推薦版本）
+      3. detailed: 詳細版（極度詳盡，擴充事件的脈絡與處理細節，適合重大事件）`;
+
+      const schema = {
+        type: "OBJECT",
+        properties: { 
+          short: { type: "STRING" },
+          standard: { type: "STRING" },
+          detailed: { type: "STRING" }
+        },
+        required: ["short", "standard", "detailed"]
+      };
+
+      const parsedData = await fetchFromGemini(prompt, schema);
+      if (parsedData && parsedData.standard) {
+        // 優化：套用專屬的輔導紀錄排版過濾器 formatRecordText
+        setResultObj({
+          short: formatRecordText(parsedData.short || ''),
+          standard: formatRecordText(parsedData.standard || ''),
+          detailed: formatRecordText(parsedData.detailed || '')
+        });
+        setSelectedLength('standard');
+      }
+    } catch (error) {
+      setErrorMsg("系統目前較為繁忙或發生錯誤，請稍後再試。");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleClear = () => {
+    if(window.confirm('確定要清空所有填寫的資料與紀錄嗎？')) {
+      setDateTime(''); setPeriod(''); setMethod(''); setTarget(''); setTargetOther('');
+      setSources([]); setSourceOther(''); setSummary(''); setAction(''); setResponse('');
+      setFollowUp('no'); setResultObj(null); setErrorMsg('');
+    }
+  };
+
+  const handleCopy = () => {
+    if (!resultObj || !resultObj[selectedLength]) return;
+    copyToClipboard(resultObj[selectedLength], () => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleDownload = () => {
+    if (!resultObj || !resultObj[selectedLength]) return;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadTxt(resultObj[selectedLength], `輔導紀錄_${selectedLength}_${dateStr}.txt`);
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-6 flex flex-col gap-4">
+        
+        {showImportSuccess && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-2 shadow-sm">
+            <Check size={20} className="shrink-0 text-emerald-600" />
+            <p className="font-bold text-sm">已成功帶入「家長訊息與AI分析」！請接續填寫其他欄位即可產生正式紀錄。</p>
+          </div>
+        )}
+
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA]/60 p-5 md:p-6 flex flex-col relative overflow-hidden h-full">
+          <div className="flex justify-between items-center mb-5 border-b border-[#F7D8BA]/60 pb-3">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg">
+              <ClipboardList className="text-[#F4A261]" size={24} />
+              步驟 1：輸入原始資料
+            </label>
+            <button onClick={handleClear} className="text-[#A47E60] hover:text-rose-500 flex items-center gap-1.5 text-sm font-bold bg-white shadow-sm px-3 py-1.5 rounded-full border border-[#F7D8BA]/40 active:scale-95">
+              <Trash2 size={14} /> 全部清空
+            </button>
+          </div>
+
+          <div className="space-y-6 overflow-y-auto pr-2 custom-scrollbar flex-1 pb-4">
+            <div className="bg-[#FFF9F5] p-4 rounded-2xl border border-[#F7D8BA]/50">
+              <h3 className="text-sm font-extrabold text-[#8A5A44] mb-3">① 基本資料</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-[#A47E60] mb-1">日期時間</label>
+                  <input type="datetime-local" value={dateTime} onChange={e => setDateTime(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-[#A47E60] mb-1">節次</label>
+                  <select value={period} onChange={e => setPeriod(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30">
+                    <option value="">請選擇</option>
+                    {periods.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-[#A47E60] mb-1">會談方式</label>
+                  <select value={method} onChange={e => setMethod(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30">
+                    <option value="">請選擇</option>
+                    {methods.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-[#A47E60] mb-1">對象</label>
+                  <select value={target} onChange={e => setTarget(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30">
+                    <option value="">請選擇</option>
+                    {targets.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  {target === '相關人員(請註明)' && (
+                    <input type="text" placeholder="請註明身分" value={targetOther} onChange={e => setTargetOther(e.target.value)} className="w-full mt-2 bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30" />
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-sm font-extrabold text-[#8A5A44] mb-2">② 資訊來源 (可複選)</h3>
+              <div className="flex flex-wrap gap-2">
+                {sourceOptions.map(opt => (
+                  <label key={opt} className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer transition-all ${sources.includes(opt) ? 'bg-[#FFE8D6] border-[#F4A261] text-[#E76F51] shadow-sm font-bold' : 'bg-white border-[#F7D8BA]/60 text-[#A47E60] hover:bg-[#FFF9F5]'}`}>
+                    <input type="checkbox" className="sr-only" checked={sources.includes(opt)} onChange={() => handleSourceChange(opt)} />
+                    {opt}
+                  </label>
+                ))}
+              </div>
+              {sources.includes('其他') && (
+                <input type="text" placeholder="請註明其他資訊來源" value={sourceOther} onChange={e => setSourceOther(e.target.value)} className="w-full mt-2 bg-white border border-[#F7D8BA]/80 rounded-xl p-2.5 outline-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30" />
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-extrabold text-[#8A5A44] mb-2">③ 事件簡述 <span className="text-rose-500">*</span></label>
+                <textarea rows="3" placeholder="簡單描述發生了什麼事..." value={summary} onChange={e => setSummary(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-3 outline-none resize-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30 custom-scrollbar" />
+              </div>
+              <div>
+                <label className="block text-sm font-extrabold text-[#8A5A44] mb-2">④ 教師處理與回應</label>
+                <textarea rows="2" placeholder="您當下的處置或說了什麼..." value={action} onChange={e => setAction(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-3 outline-none resize-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30 custom-scrollbar" />
+              </div>
+              <div>
+                <label className="block text-sm font-extrabold text-[#8A5A44] mb-2">⑤ 學生/家長回應</label>
+                <textarea rows="2" placeholder="對方的態度或說法..." value={response} onChange={e => setResponse(e.target.value)} className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-3 outline-none resize-none text-[#5c4d43] text-sm shadow-sm focus:ring-2 focus:ring-[#F4A261]/30 custom-scrollbar" />
+              </div>
+            </div>
+
+            <div className="bg-[#FFF9F5] p-4 rounded-2xl border border-[#F7D8BA]/50">
+              <h3 className="text-sm font-extrabold text-[#8A5A44] mb-2">⑥ 後續追蹤</h3>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input type="radio" name="followUp" value="no" checked={followUp === 'no'} onChange={(e) => setFollowUp(e.target.value)} className="w-4 h-4 text-[#F4A261] focus:ring-[#F4A261] border-[#F7D8BA]" />
+                  <span className="text-sm font-bold text-[#A47E60] group-hover:text-[#F4A261] transition-colors">否 / 已結案</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input type="radio" name="followUp" value="yes" checked={followUp === 'yes'} onChange={(e) => setFollowUp(e.target.value)} className="w-4 h-4 text-[#F4A261] focus:ring-[#F4A261] border-[#F7D8BA]" />
+                  <span className="text-sm font-bold text-[#A47E60] group-hover:text-[#F4A261] transition-colors">是，需要追蹤</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-[#F7D8BA]/60 shrink-0">
+            <button onClick={handleGenerate} disabled={isGenerating || !summary.trim()} className="w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:from-[#E9C46A]/50 disabled:to-[#E9C46A]/50 disabled:text-white/70 text-white font-bold py-3.5 rounded-2xl transition-all shadow-md flex justify-center items-center gap-2 text-lg active:scale-[0.98]">
+              {isGenerating ? <><Loader2 className="animate-spin" size={24} /> 魔法編寫中...</> : <><Sparkles size={22} /> 步驟 2：AI 自動撰寫</>}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="lg:col-span-6 flex flex-col gap-4 h-[calc(100vh-200px)] md:h-auto pb-4 md:pb-0">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-rose-700 flex items-center gap-3 shadow-sm shrink-0"><AlertCircle size={24} className="shrink-0" /><p className="font-bold text-sm md:text-base">{errorMsg}</p></div>}
+        
+        <div className="bg-white/95 backdrop-blur-md rounded-3xl shadow-[0_10px_40px_rgb(138,90,68,0.08)] border border-[#F7D8BA] flex flex-col h-full overflow-hidden">
+          <div className="bg-[#FFE8D6]/60 px-6 py-4 flex flex-col xl:flex-row xl:justify-between items-start xl:items-center gap-3 border-b border-[#F7D8BA]/60 shrink-0">
+            <h3 className="font-extrabold text-[#8A5A44] text-lg flex items-center gap-2">
+              <FileText className="text-[#F4A261]" size={22} /> 生成結果 (可直接編輯)
+            </h3>
+            {resultObj && (
+              <div className="flex gap-2 w-full xl:w-auto">
+                <button onClick={handleDownload} className="flex-1 xl:flex-none flex justify-center items-center gap-1.5 text-xs px-4 py-2 rounded-full shadow-sm transition-all font-bold active:scale-95 bg-white hover:bg-gray-50 text-[#8A5A44] border border-[#F7D8BA]/80">
+                  <Download size={14} /> 下載 TXT
+                </button>
+                <button onClick={handleCopy} className={`flex-1 xl:flex-none flex justify-center items-center gap-1.5 text-xs px-4 py-2 rounded-full shadow-sm transition-all font-bold active:scale-95 ${copied ? 'bg-emerald-500 text-white' : 'bg-white hover:bg-gray-50 text-[#8A5A44] border border-[#F7D8BA]/80'}`}>
+                  {copied ? <Check size={14} /> : <Copy size={14} className={copied ? "" : "text-[#A47E60]"} />}
+                  {copied ? '已複製全文' : '一鍵複製'}
+                </button>
+              </div>
+            )}
+          </div>
+          
+          <div className="p-5 md:p-6 flex-1 flex flex-col bg-[url('https://www.transparenttextures.com/patterns/notebook.png')] bg-opacity-20 relative">
+            {!resultObj && !isGenerating ? (
+              <div className="flex flex-col items-center justify-center h-full text-[#A47E60] opacity-80">
+                <ClipboardList size={48} className="mb-4 text-[#F4A261]" />
+                <p className="font-extrabold text-lg">尚未生成紀錄</p>
+                <p className="text-sm mt-2 font-medium">填寫左側資料後點擊按鈕，系統將自動為您撰寫正式紀錄。</p>
+              </div>
+            ) : isGenerating ? (
+              <div className="flex flex-col items-center justify-center h-full text-[#F4A261]">
+                <Loader2 className="animate-spin mb-4" size={48} />
+                <p className="font-extrabold text-lg animate-pulse">AI 正在為您組織專業的輔導紀錄...</p>
+              </div>
+            ) : (
+              <div className="flex flex-col h-full gap-3 animate-in fade-in duration-500">
+                {/* 新增：長度切換按鈕區塊 */}
+                <div className="flex bg-white/80 backdrop-blur-md rounded-full p-1 border border-[#F7D8BA]/60 shadow-sm w-max">
+                  {[{ id: 'short', label: '簡短版' }, { id: 'standard', label: '標準版' }, { id: 'detailed', label: '詳細版' }].map(l => (
+                    <button 
+                      key={l.id} 
+                      onClick={() => setSelectedLength(l.id)} 
+                      className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${selectedLength === l.id ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#8A5A44] hover:bg-white'}`}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+                
+                <textarea 
+                  value={resultObj[selectedLength] || ''} 
+                  onChange={(e) => setResultObj(prev => ({...prev, [selectedLength]: e.target.value}))} 
+                  className="w-full flex-1 bg-white/70 backdrop-blur-sm border border-[#F7D8BA]/80 rounded-2xl p-5 outline-none resize-none text-[#4a3f35] font-medium leading-relaxed shadow-inner focus:ring-4 focus:ring-[#F4A261]/20 focus:border-[#F4A261] transition-all custom-scrollbar text-[15px]" 
+                  placeholder="生成的紀錄會顯示在這裡，您可以直接修改文字內容..."
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 2. 家長訊息判讀 (AnalyzeView)
+// ==========================================
+function AnalyzeView({ role, onConvertToCounseling }) {
+  const [parentMessage, setParentMessage] = useLocalStorage('ai_analyze_draft', '');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [result, setResult] = useLocalStorage('ai_analyze_result', null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [regeneratingKeys, setRegeneratingKeys] = useState({});
+  const [selectedLength, setSelectedLength] = useState('standard');
+
+  const handleAnalyze = async () => {
+    if (!parentMessage.trim()) return;
+    setIsAnalyzing(true);
+    setResult(null);
+    setErrorMsg('');
+
+    try {
+      const prompt = `你是一個專業的教育心理專家與教師溝通顧問。請分析以下家長傳給「${getRoleName(role)}」的訊息。
+      回傳格式必須為 JSON，包含以下欄位：
+      - emotion: 陣列，判斷家長的情緒標籤
+      - intent: 字串，家長的意圖
+      - riskLevel: 字串，溝通風險等級 (低, 中, 高)
+      - replies: 物件，必須包含 warm(溫暖), professional(專業), defensive(防護) 三種類型。
+        ⚠️ 每一種類型的回覆，都必須再提供 short(精簡版約50字), standard(標準版約150字), detailed(詳細版約300字) 三種長度版本！
+      - risks: 陣列，字串列表，提醒老師回覆時的避雷重點。
+      
+      【重要限制】：請純文字輸出，絕對不要使用任何 Markdown 格式（例如 ** 加粗），不要出現任何 * 符號。
+      
+      家長訊息：${parentMessage}`;
+
+      const replyLengthsSchema = { type: "OBJECT", properties: { short: { type: "STRING" }, standard: { type: "STRING" }, detailed: { type: "STRING" } }, required: ["short", "standard", "detailed"] };
+      const schema = {
+        type: "OBJECT",
+        properties: {
+          emotion: { type: "ARRAY", items: { type: "STRING" } }, intent: { type: "STRING" }, riskLevel: { type: "STRING" },
+          replies: { type: "OBJECT", properties: { warm: replyLengthsSchema, professional: replyLengthsSchema, defensive: replyLengthsSchema }, required: ["warm", "professional", "defensive"] },
+          risks: { type: "ARRAY", items: { type: "STRING" } }
+        },
+        required: ["emotion", "intent", "riskLevel", "replies", "risks"]
+      };
+
+      const parsedData = await fetchFromGemini(prompt, schema);
+      setResult(parsedData);
+      setSelectedLength('standard');
+    } catch (error) {
+      setErrorMsg("系統目前較為繁忙或發生錯誤，請稍後再試。");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleRegenerateReply = async (typeKey, typeName) => {
+    const lengthKey = selectedLength;
+    const lengthLabels = { short: '精簡版 (約50字)', standard: '標準版 (約150字)', detailed: '詳細版 (約300字)' };
+    const lengthLabel = lengthLabels[lengthKey];
+    const regenKey = `${typeKey}-${lengthKey}`;
+
+    setRegeneratingKeys(prev => ({ ...prev, [regenKey]: true }));
+    try {
+      const prompt = `針對以下家長傳給「${getRoleName(role)}」的訊息，請重新撰寫一份全新的【${typeName} - ${lengthLabel}】回覆建議。
+      【重要限制】：請純文字輸出，絕對不要使用任何 Markdown 格式（例如 ** 加粗），不要出現任何 * 符號。
+      家長訊息：${parentMessage}`;
+
+      const schema = { type: "OBJECT", properties: { reply: { type: "STRING" } }, required: ["reply"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      
+      if (parsedData?.reply) {
+        setResult(prev => {
+          const currentReplyNode = prev.replies[typeKey];
+          let newReplyNode = typeof currentReplyNode === 'string' ? { [lengthKey]: parsedData.reply } : { ...currentReplyNode, [lengthKey]: parsedData.reply };
+          return { ...prev, replies: { ...prev.replies, [typeKey]: newReplyNode } };
+        });
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setRegeneratingKeys(prev => ({ ...prev, [regenKey]: false }));
+    }
+  };
+
+  const handleClear = () => { 
+    if(window.confirm('確定要清空嗎？')) {
+      setParentMessage(''); setResult(null); setErrorMsg(''); setRegeneratingKeys({}); 
+    }
+  };
+
+  const getReplyText = (typeKey) => {
+    if (!result || !result.replies) return null;
+    const replyNode = result.replies[typeKey] || result.replies[typeKey === 'warm' ? '溫暖關懷型' : typeKey === 'professional' ? '專業中立型' : '行政防護型'];
+    if (!replyNode) return null;
+    if (typeof replyNode === 'string') return replyNode;
+    return replyNode[selectedLength] || replyNode['standard'] || replyNode['short'] || Object.values(replyNode)[0];
+  };
+
+  const handleSendToRecordWithReply = (replyText) => {
+    onConvertToCounseling({ 
+      target: '家長', 
+      sources: ['家長說明'],
+      // 移除 AI 判讀狀態，只保留家長來訊內容
+      summary: `【家長來訊內容】\n${parentMessage}`,
+      action: cleanAsterisks(replyText)
+    });
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA] p-5 md:p-6 flex flex-col h-full">
+          <div className="flex items-center justify-between mb-3">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg"><MessageSquare className="text-[#F4A261]" size={22} />請貼上家長的訊息</label>
+            {parentMessage && <button onClick={handleClear} className="text-[#A47E60] hover:text-[#E76F51] flex items-center gap-1 text-sm font-bold transition-colors bg-[#FFF9F5] px-2.5 py-1 rounded-full border border-[#F7D8BA]/50"><Trash2 size={14} /> 清空</button>}
+          </div>
+          <textarea className="w-full flex-1 bg-white border border-[#F7D8BA]/80 rounded-2xl p-4 md:p-5 focus:ring-4 focus:ring-[#F4A261]/20 focus:border-[#F4A261] outline-none resize-none min-h-[200px] text-[#5c4d43] leading-relaxed transition-all shadow-sm custom-scrollbar" placeholder="例如：老師，我兒子說他今天被同學打，為什麼你沒有跟我說？" value={parentMessage} onChange={(e) => setParentMessage(e.target.value)} />
+          <button onClick={handleAnalyze} disabled={isAnalyzing || !parentMessage.trim()} className="mt-5 w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:from-[#E9C46A]/50 disabled:to-[#E9C46A]/50 disabled:text-white/70 text-white font-bold py-3.5 md:py-4 rounded-2xl transition-all shadow-md flex justify-center items-center gap-2 text-lg active:scale-[0.98]">
+            {isAnalyzing ? <><Loader2 className="animate-spin" size={24} /> 分析生成中...</> : <><Sparkles size={24} /> 魔法生成建議</>}
+          </button>
+        </div>
+      </div>
+
+      <div className="lg:col-span-7 flex flex-col gap-4 h-[calc(100vh-200px)] md:h-auto overflow-y-auto pr-1 custom-scrollbar">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-rose-700 flex items-center gap-3 shadow-sm"><AlertCircle size={24} className="shrink-0" /><p className="font-bold text-sm md:text-base">{errorMsg}</p></div>}
+        
+        <PhonePreview 
+          isEmpty={!result && !isAnalyzing}
+          isLoading={isAnalyzing}
+          emptyIcon={<ShieldAlert size={40} className="text-[#E76F51]" />}
+          emptyTitle="等待訊息中..."
+          emptyDesc="貼上家長訊息後點擊按鈕，我會為您準備情緒分析與多種草稿喔！"
+          headerAvatar="家長" headerTitle="家長私訊" headerSubtitle="溝通模擬視窗"
+        >
+          {result && (
+            <div className="space-y-6 flex flex-col">
+              <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-md border border-[#F7D8BA] p-4 md:p-5 mx-1 animate-in slide-in-from-top-4">
+                <h3 className="font-extrabold text-[#8A5A44] mb-3 border-b border-[#F7D8BA]/60 pb-2 flex items-center justify-between text-sm md:text-base">
+                  <span className="flex items-center gap-1.5"><Search size={16} className="text-[#F4A261]"/> AI 訊息判讀報告</span>
+                  <RiskBadge level={result?.riskLevel} />
+                </h3>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div className="bg-[#FFF9F5] p-2.5 rounded-xl border border-[#F7D8BA]/40">
+                    <span className="block text-[10px] text-[#A47E60] font-bold mb-1.5">主要情緒</span>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.isArray(result?.emotion) ? result.emotion.map((e, i) => <span key={i} className="bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full text-[10px] md:text-xs font-bold">{cleanAsterisks(typeof e === 'object' ? JSON.stringify(e) : e)}</span>) : '無'}
+                    </div>
+                  </div>
+                  <div className="bg-[#FFF9F5] p-2.5 rounded-xl border border-[#F7D8BA]/40">
+                    <span className="block text-[10px] text-[#A47E60] font-bold mb-1.5">意圖分類</span>
+                    <span className="bg-sky-100 text-sky-700 px-2 py-0.5 rounded-full text-[10px] md:text-xs font-bold inline-block">{cleanAsterisks(result?.intent || '未判別')}</span>
+                  </div>
+                </div>
+                {Array.isArray(result?.risks) && result.risks.length > 0 && (
+                  <div className="bg-orange-50/80 border border-orange-200 p-2.5 rounded-xl">
+                    <div className="flex items-center gap-1.5 text-orange-700 text-xs font-extrabold mb-1"><AlertTriangle size={14} /> 溝通避雷提醒</div>
+                    <ul className="list-disc list-inside text-[11px] md:text-xs text-orange-800 space-y-1 font-bold ml-1">
+                      {result.risks.map((r, i) => {
+                        let rText = typeof r === 'object' ? (r.phrase || r.suggestion || JSON.stringify(r)) : r;
+                        return <li key={i}>{cleanAsterisks(rText)}</li>;
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="mx-1 animate-in fade-in bg-gradient-to-r from-emerald-50/50 to-teal-50/50 p-4 rounded-2xl border border-emerald-100/80 shadow-sm">
+                <div className="flex items-center gap-1.5 text-emerald-700 font-extrabold text-sm mb-2">
+                  <Lightbulb size={16} /> 後續歸檔建議
+                </div>
+                <p className="text-xs text-emerald-600/90 font-bold mb-3 leading-relaxed">
+                  如果您處理完畢，可以直接將這起事件轉存為校務系統的輔導紀錄：
+                </p>
+                <button 
+                  onClick={() => onConvertToCounseling({ 
+                    target: '家長', sources: ['家長說明'],
+                    // 移除 AI 判讀狀態，只保留家長來訊內容
+                    summary: `【家長來訊內容】\n${parentMessage}`
+                  })}
+                  className="w-full bg-white hover:bg-emerald-50 text-emerald-600 font-bold py-2.5 rounded-xl shadow-sm border border-emerald-200 flex justify-center items-center gap-2 text-sm transition-all active:scale-[0.98]"
+                >
+                  {/* 修改按鈕上的文字以符合實際行為 */}
+                  <ClipboardList size={16} /> 僅帶入「家長訊息」(尚未回覆)
+                </button>
+                <div className="mt-3 flex items-start gap-1.5 text-[11.5px] text-emerald-600/80 font-bold leading-tight">
+                  <CheckSquare size={13} className="shrink-0 mt-[2px]" />
+                  <p>提示：若您想連同「您的回覆」一起帶入紀錄，請直接點選下方對話泡泡中的【採用並轉入紀錄】按鈕！</p>
+                </div>
+              </div>
+
+              <div className="flex bg-white/80 backdrop-blur-md rounded-full p-1 border border-white shadow-sm w-max mx-auto relative z-10">
+                {[{ id: 'short', label: '精簡版' }, { id: 'standard', label: '標準版' }, { id: 'detailed', label: '詳細版' }].map(l => (
+                  <button key={l.id} onClick={() => setSelectedLength(l.id)} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${selectedLength === l.id ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#8A5A44] hover:bg-white'}`}>{l.label}</button>
+                ))}
+              </div>
+
+              <div className="space-y-6">
+                {getReplyText('warm') && <LineBubble type="溫暖關懷型" text={getReplyText('warm')} onRegenerate={() => handleRegenerateReply('warm', '溫暖關懷型')} isRegenerating={regeneratingKeys[`warm-${selectedLength}`]} onSendToRecord={() => handleSendToRecordWithReply(getReplyText('warm'))} />}
+                {getReplyText('professional') && <LineBubble type="專業中立型" text={getReplyText('professional')} onRegenerate={() => handleRegenerateReply('professional', '專業中立型')} isRegenerating={regeneratingKeys[`professional-${selectedLength}`]} onSendToRecord={() => handleSendToRecordWithReply(getReplyText('professional'))} />}
+                {getReplyText('defensive') && <LineBubble type="行政防護型" text={getReplyText('defensive')} onRegenerate={() => handleRegenerateReply('defensive', '行政防護型')} isRegenerating={regeneratingKeys[`defensive-${selectedLength}`]} onSendToRecord={() => handleSendToRecordWithReply(getReplyText('defensive'))} />}
+              </div>
+            </div>
+          )}
+        </PhonePreview>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 3. 我的訊息潤飾 (PolishView)
+// ==========================================
+function PolishView({ role, onConvertToCounseling }) {
+  const [draft, setDraft] = useLocalStorage('ai_polish_draft', '');
+  const [tone, setTone] = useState('溫暖親切');
+  const [targetAudience, setTargetAudience] = useState('parent'); 
+  const [format, setFormat] = useState('paragraph'); 
+  const [isPolishing, setIsPolishing] = useState(false);
+  const [result, setResult] = useLocalStorage('ai_polish_result', null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [regeneratingKeys, setRegeneratingKeys] = useState({});
+
+  const handlePolish = async () => {
+    if (!draft.trim()) return;
+    setIsPolishing(true);
+    setResult(null);
+    setErrorMsg('');
+
+    try {
+      const audienceText = targetAudience === 'parent' ? '學生家長' : '學校同事或行政人員';
+      const formatText = format === 'bullet' 
+        ? '【條列式重點】(層次分明，並且每個重點開頭「必須」加上適合的 Emoji 符號，例如 ✅、📌、⏰、💡 等，讓版面清楚生動)' 
+        : '【流暢的文字段落】(完整的文章結構，語氣自然)';
+      const riskCheckText = targetAudience === 'parent' 
+        ? '檢查草稿有無過度承諾、推卸責任或引發家長焦慮的地雷字眼。' 
+        : '檢查草稿有無語氣過於強硬不禮貌、推卸責任、或造成行政溝通誤會的地雷字眼。';
+
+      const prompt = `請幫「${getRoleName(role)}」潤飾他要傳給「${audienceText}」的訊息草稿。
+      【寫作限制】：目標語氣：「${tone}」 | 輸出格式：${formatText} (請絕對遵守)
+      【重要限制】：請純文字輸出，絕對不要使用任何 Markdown 格式（例如 ** 加粗），不要出現任何 * 符號。
+      
+      格式為 JSON：
+      - polished: 必須包含 short (精簡版), standard (標準版), detailed (詳細版) 三個字串。
+      - risks: 陣列，${riskCheckText} 若有，回傳 [{phrase, reason, suggestions}], 若無回傳空陣列。
+        ⚠️ 注意：suggestions 必須是【字串陣列(Array)】，將每一個具體的修改建議單獨拆開。
+      
+      草稿內容：${draft}`;
+
+      const schema = {
+        type: "OBJECT",
+        properties: {
+          polished: { type: "OBJECT", properties: { short: { type: "STRING" }, standard: { type: "STRING" }, detailed: { type: "STRING" } }, required: ["short", "standard", "detailed"] },
+          risks: { type: "ARRAY", items: { type: "OBJECT", properties: { phrase: { type: "STRING" }, reason: { type: "STRING" }, suggestions: { type: "ARRAY", items: { type: "STRING" } } }, required: ["phrase", "reason", "suggestions"] } }
+        },
+        required: ["polished", "risks"]
+      };
+
+      const parsedData = await fetchFromGemini(prompt, schema);
+      setResult(parsedData);
+    } catch (e) {
+      setErrorMsg("系統目前較為繁忙或發生錯誤，請稍後再試。");
+    } finally {
+      setIsPolishing(false);
+    }
+  };
+
+  const handleRegeneratePolish = async (key, typeName) => {
+    setRegeneratingKeys(prev => ({ ...prev, [key]: true }));
+    try {
+      const formatText = format === 'bullet' ? '條列式重點(每個項目開頭需加上適合的Emoji符號)' : '文字段落';
+      const prompt = `請幫「${getRoleName(role)}」重新潤飾訊息草稿。語氣：「${tone}」。格式：「${formatText}」。請撰寫全新的【${typeName}】版本。草稿：${draft}。
+      【重要限制】：請純文字輸出，絕對不要使用任何 Markdown 格式（例如 ** 加粗），不要出現任何 * 符號。`;
+      const schema = { type: "OBJECT", properties: { reply: { type: "STRING" } }, required: ["reply"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      if (parsedData?.reply) setResult(prev => ({ ...prev, polished: { ...prev.polished, [key]: parsedData.reply } }));
+    } catch (error) { console.error(error); } finally { setRegeneratingKeys(prev => ({ ...prev, [key]: false })); }
+  };
+
+  const handleSendToRecordWithPolish = (polishedText) => {
+    onConvertToCounseling({ 
+      target: targetAudience === 'parent' ? '家長' : '任課老師', 
+      sources: ['教師直接觀察'],
+      summary: `【原始草稿與想法】\n${draft}`,
+      action: cleanAsterisks(polishedText)
+    });
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA] p-5 md:p-6 flex flex-col h-full">
+          <div className="flex justify-between items-center mb-4">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg"><PenTool className="text-[#F4A261]" size={22} />請輸入回覆草稿</label>
+            {draft && <button onClick={() => { if(window.confirm('確定要清空嗎？')){setDraft(''); setResult(null); setErrorMsg('');} }} className="text-[#A47E60] hover:text-[#E76F51] flex items-center gap-1 text-sm font-bold transition-colors bg-[#FFF9F5] px-2.5 py-1 rounded-full border border-[#F7D8BA]/50"><Trash2 size={14} /> 清空</button>}
+          </div>
+          
+          <textarea className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-4 md:p-5 focus:ring-4 focus:ring-[#F4A261]/20 focus:border-[#F4A261] outline-none resize-none min-h-[120px] text-[#5c4d43] mb-5 leading-relaxed transition-all shadow-sm custom-scrollbar" placeholder="把您想說的話或生氣的草稿貼在這裡..." value={draft} onChange={(e) => setDraft(e.target.value)} />
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5 flex-1">
+            <div>
+              <label className="block text-xs font-extrabold text-[#A47E60] mb-2 flex items-center gap-1.5"><Users size={14} /> 接收對象</label>
+              <div className="flex bg-[#FFF9F5] rounded-xl p-1 border border-[#F7D8BA]/60 shadow-inner">
+                <button onClick={() => setTargetAudience('parent')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${targetAudience === 'parent' ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#A47E60] hover:bg-[#FFE8D6]'}`}>👨‍👩‍👧 給家長</button>
+                <button onClick={() => setTargetAudience('colleague')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${targetAudience === 'colleague' ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#A47E60] hover:bg-[#FFE8D6]'}`}>🏫 給教職</button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-extrabold text-[#A47E60] mb-2 flex items-center gap-1.5"><AlignLeft size={14} /> 輸出格式</label>
+              <div className="flex bg-[#FFF9F5] rounded-xl p-1 border border-[#F7D8BA]/60 shadow-inner">
+                <button onClick={() => setFormat('paragraph')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-1 ${format === 'paragraph' ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#A47E60] hover:bg-[#FFE8D6]'}`}><AlignLeft size={16}/> 段落</button>
+                <button onClick={() => setFormat('bullet')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-1 ${format === 'bullet' ? 'bg-[#F4A261] text-white shadow-sm' : 'text-[#A47E60] hover:bg-[#FFE8D6]'}`}><ListOrdered size={16}/> 條列</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <label className="block text-xs font-extrabold text-[#A47E60] mb-2">希望的語氣</label>
+            <div className="flex flex-wrap gap-2 md:gap-3">
+              {['溫暖親切', '專業中立', '行政正式'].map(t => (
+                <button key={t} onClick={() => setTone(t)} className={`px-3 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all border-2 flex-1 md:flex-none text-center ${tone === t ? 'bg-[#FFE8D6] border-[#F4A261] text-[#E76F51] shadow-sm' : 'bg-white border-[#F7D8BA]/80 text-[#A47E60] hover:bg-[#FFF9F5]'}`}>{t}</button>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={handlePolish} disabled={isPolishing || !draft.trim()} className="w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:from-[#E9C46A]/50 disabled:text-white/70 text-white font-bold py-3.5 md:py-4 rounded-2xl transition-all shadow-md flex justify-center items-center gap-2 text-lg active:scale-[0.98]">
+            {isPolishing ? <><Loader2 className="animate-spin" size={24} /> 潤飾檢測中...</> : <><ShieldAlert size={24} /> 檢測並潤飾文字</>}
+          </button>
+        </div>
+      </div>
+      
+      <div className="lg:col-span-7 flex flex-col gap-4 h-[calc(100vh-200px)] md:h-auto overflow-y-auto pr-1 custom-scrollbar">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 md:p-5 text-rose-700 flex items-center gap-3 shadow-sm"><AlertCircle size={24} className="shrink-0" /><p className="font-bold text-sm md:text-base">{errorMsg}</p></div>}
+        
+        <PhonePreview 
+          isEmpty={!result && !isPolishing}
+          isLoading={isPolishing}
+          emptyIcon={<PenTool size={40} className="text-[#E76F51]" />}
+          emptyTitle="不知道怎麼回比較好？"
+          emptyDesc="貼上想傳達的想法，我會幫您潤飾成得體的話語，並檢查是否踩到溝通地雷！"
+          headerAvatar={targetAudience === 'parent' ? "家" : "同"}
+          headerTitle={targetAudience === 'parent' ? "家長私訊" : "教職員私訊"}
+          headerSubtitle="溝通模擬視窗"
+        >
+          {result && (
+            <div className="space-y-6 flex flex-col">
+              {Array.isArray(result?.risks) && result.risks.length > 0 && (
+                <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-md border border-rose-200 p-4 mx-1 animate-in slide-in-from-top-4 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-1 h-full bg-rose-400"></div>
+                  <h3 className="flex items-center gap-1.5 text-rose-600 font-extrabold mb-3 text-sm"><AlertCircle size={16} /> 草稿風險提醒</h3>
+                  <div className="space-y-3">
+                    {result.risks.map((risk, idx) => {
+                      const suggestionsArray = Array.isArray(risk?.suggestions) ? risk.suggestions : [risk?.suggestion || risk?.suggestions || '無建議'];
+                      return (
+                        <div key={idx} className="bg-rose-50/50 p-3 rounded-xl border border-rose-100">
+                          <p className="text-xs font-extrabold text-rose-700 mb-1">用語：「{cleanAsterisks(risk?.phrase || '未知')}」</p>
+                          <p className="text-xs text-[#5c4d43] mb-2 font-medium">{cleanAsterisks(risk?.reason || '建議調整')}</p>
+                          <div className="bg-white p-2 rounded-lg border border-rose-100/50">
+                            <div className="text-[11px] text-emerald-600 font-extrabold flex items-center gap-1 mb-1"><Check size={12} /> 建議：</div>
+                            <ul className="space-y-1 ml-1">
+                              {suggestionsArray.map((sug, sugIdx) => (
+                                <li key={sugIdx} className="text-[11px] text-emerald-700 font-bold flex items-start gap-1"><span className="text-emerald-400 mt-[2px] text-[8px]">◆</span><span className="leading-relaxed">{cleanAsterisks(sug)}</span></li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="mx-1 animate-in fade-in bg-gradient-to-r from-emerald-50/50 to-teal-50/50 p-4 rounded-2xl border border-emerald-100/80 shadow-sm mt-2">
+                <div className="flex items-center gap-1.5 text-emerald-700 font-extrabold text-sm mb-2">
+                  <Lightbulb size={16} /> 後續歸檔建議
+                </div>
+                <p className="text-xs text-emerald-600/90 font-bold mb-3 leading-relaxed">
+                  如果您處理完畢，可以直接將這起事件轉存為校務系統的輔導紀錄：
+                </p>
+                <button 
+                  onClick={() => onConvertToCounseling({ 
+                    target: targetAudience === 'parent' ? '家長' : '任課老師', 
+                    sources: ['教師直接觀察'],
+                    summary: `【原始草稿與想法】\n${draft}`
+                  })}
+                  className="w-full bg-white hover:bg-emerald-50 text-emerald-600 font-bold py-2.5 rounded-xl shadow-sm border border-emerald-200 flex justify-center items-center gap-2 text-sm transition-all active:scale-[0.98]"
+                >
+                  <ClipboardList size={16} /> 僅帶入「原始草稿」(尚未套用潤飾文字)
+                </button>
+                <div className="mt-3 flex items-start gap-1.5 text-[11.5px] text-emerald-600/80 font-bold leading-tight">
+                  <CheckSquare size={13} className="shrink-0 mt-[2px]" />
+                  <p>提示：若您想連同「潤飾後的回覆」一起帶入紀錄，請直接點選下方對話泡泡中的【採用並轉入紀錄】按鈕！</p>
+                </div>
+              </div>
+
+              {result.polished?.short && <LineBubble type={`簡短版 (${tone})`} text={result.polished.short} onRegenerate={() => handleRegeneratePolish('short', '簡短版')} isRegenerating={regeneratingKeys['short']} onSendToRecord={() => handleSendToRecordWithPolish(result.polished.short)} />}
+              {result.polished?.standard && <LineBubble type={`標準版 (${tone})`} text={result.polished.standard} onRegenerate={() => handleRegeneratePolish('standard', '標準版')} isRegenerating={regeneratingKeys['standard']} onSendToRecord={() => handleSendToRecordWithPolish(result.polished.standard)} />}
+              {result.polished?.detailed && <LineBubble type={`詳細版 (${tone})`} text={result.polished.detailed} onRegenerate={() => handleRegeneratePolish('detailed', '詳細版')} isRegenerating={regeneratingKeys['detailed']} onSendToRecord={() => handleSendToRecordWithPolish(result.polished.detailed)} />}
+            </div>
+          )}
+        </PhonePreview>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 4. 班級公告 (AnnouncementView)
+// ==========================================
+function AnnouncementView({ role }) {
+  const [topic, setTopic] = useState('');
+  const [points, setPoints] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [regeneratingKeys, setRegeneratingKeys] = useState({});
+  const [addSignature, setAddSignature] = useState(false);
+  const [addGreeting, setAddGreeting] = useState(true);
+
+  const inspirationTags = [
+    { label: '🏃‍♂️ 運動會', topic: '本週六運動會', points: '1. 穿著運動服\n2. 帶水壺與毛巾\n3. 中午12:00放學，不供餐' },
+    { label: '💯 期中考', topic: '期中考週注意事項', points: '1. 考試日期：下週二、三\n2. 提早睡覺，記得吃早餐\n3. 確認文具(2B鉛筆、橡皮擦)帶齊' },
+    { label: '🌧️ 颱風停課', topic: '颱風停課通知', points: '1. 明日依人事行政局公告停課一日\n2. 請家長注意孩子居家安全\n3. 原定作業延至下週一繳交' }
+  ];
+
+  const handleGenerate = async () => {
+    if (!topic.trim() || !points.trim()) return;
+    setIsGenerating(true);
+    setResult(null);
+    setErrorMsg('');
+
+    try {
+      let extraInstructions = "";
+      if (addSignature) extraInstructions += "4. 請在結尾加上「提醒家長簽名、填寫回條或在群組回覆」的字句。\n";
+      if (addGreeting) extraInstructions += "5. 請在最後加上溫馨的結尾問候語。\n";
+
+      const prompt = `請幫「${getRoleName(role)}」撰寫LINE【群組公告】。主題：${topic}。重點：${points}。
+      限制：1. 絕對不冗長，以「條列式文字」為優先。2. 去除廢話直接切入重點。3. 適度使用標示 Emoji (如📌✅)。${extraInstructions}
+      【重要限制】：絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。
+      請提供兩種版本：1. concise: 精簡版(字數極少，極度精要)。2. standard: 標準版(完整清晰)。`;
+
+      const schema = { type: "OBJECT", properties: { concise: { type: "STRING" }, standard: { type: "STRING" } }, required: ["concise", "standard"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      setResult(parsedData);
+    } catch (error) { setErrorMsg("系統繁忙或發生錯誤，請稍後再試。"); } finally { setIsGenerating(false); }
+  };
+
+  const handleRegenerateAnnouncement = async (key, typeName, desc) => {
+    setRegeneratingKeys(prev => ({ ...prev, [key]: true }));
+    try {
+      const prompt = `請幫「${getRoleName(role)}」重新撰寫這篇 LINE 班級公告的【${typeName}】。主題：${topic}。重點：${points}。限制：${desc}。條列式優先。絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。`;
+      const schema = { type: "OBJECT", properties: { reply: { type: "STRING" } }, required: ["reply"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      if (parsedData?.reply) setResult(prev => ({ ...prev, [key]: parsedData.reply }));
+    } catch (error) { console.error(error); } finally { setRegeneratingKeys(prev => ({ ...prev, [key]: false })); }
+  };
+
+  const handleClear = () => { setTopic(''); setPoints(''); setResult(null); setErrorMsg(''); setRegeneratingKeys({}); };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA]/60 p-6 flex flex-col h-full relative">
+          <div className="flex justify-between items-center mb-5">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg"><Megaphone className="text-[#F4A261]" size={24} />設定公告</label>
+            {(topic || points) && <button onClick={handleClear} className="text-[#A47E60] hover:text-rose-500 flex items-center gap-1.5 text-sm font-bold bg-white shadow-sm px-3 py-1.5 rounded-full border border-[#F7D8BA]/40 active:scale-95"><Trash2 size={14} /> 清空</button>}
+          </div>
+          <div className="space-y-5 flex-1">
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Lightbulb size={16} className="text-[#F4A261]" /><span className="text-xs font-bold text-[#A47E60]">靈感快充</span></div>
+              <div className="flex flex-wrap gap-2">
+                {inspirationTags.map(tag => <button key={tag.label} onClick={() => {setTopic(tag.topic); setPoints(tag.points);}} className="bg-[#FFF9F5] hover:bg-[#FFE8D6] text-[#8A5A44] border border-[#F7D8BA]/60 px-3 py-1.5 rounded-xl text-xs font-bold transition-all hover:shadow-sm active:scale-95">{tag.label}</button>)}
+              </div>
+            </div>
+            <div><input type="text" className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-3.5 focus:ring-4 focus:ring-[#F4A261]/20 focus:border-[#F4A261] outline-none text-[#5c4d43] font-bold shadow-sm placeholder:text-[#A47E60]/40" placeholder="主題 (如: 週六運動會)" value={topic} onChange={(e) => setTopic(e.target.value)} /></div>
+            <div><textarea className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-4 focus:ring-4 focus:ring-[#F4A261]/20 focus:border-[#F4A261] outline-none resize-none min-h-[140px] text-[#5c4d43] font-bold shadow-sm leading-relaxed placeholder:text-[#A47E60]/40 custom-scrollbar" placeholder="重點事項..." value={points} onChange={(e) => setPoints(e.target.value)} /></div>
+            <div className="bg-gradient-to-br from-[#FFF9F5] to-white border border-[#F7D8BA]/60 p-4 rounded-2xl shadow-sm">
+              <label className="block text-xs font-bold text-[#A47E60] mb-3 flex items-center gap-1.5"><CheckSquare size={16} className="text-[#F4A261]" /> 自動加入</label>
+              <div className="flex flex-col gap-3">
+                <ToggleSwitch label="提醒家長簽名/回覆" checked={addSignature} onChange={setAddSignature} />
+                <ToggleSwitch label="加上溫馨結尾問候" checked={addGreeting} onChange={setAddGreeting} />
+              </div>
+            </div>
+          </div>
+          <button onClick={handleGenerate} disabled={isGenerating || !topic.trim() || !points.trim()} className="mt-6 w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:from-[#E9C46A]/50 disabled:text-white/70 text-white font-bold py-4 rounded-2xl transition-all shadow-md flex justify-center items-center gap-2 text-lg active:scale-[0.98]">
+            {isGenerating ? <><Loader2 className="animate-spin" size={24} /> 撰寫中...</> : <><Sparkles size={22} /> 產生公告</>}
+          </button>
+        </div>
+      </div>
+      <div className="lg:col-span-7 h-[calc(100vh-200px)] md:h-auto overflow-y-auto pr-1 custom-scrollbar">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 mb-4 text-rose-700 flex items-center gap-3"><AlertCircle size={24} className="shrink-0" /><p className="font-bold text-sm">{errorMsg}</p></div>}
+        <PhonePreview 
+          isEmpty={!result && !isGenerating} isLoading={isGenerating}
+          emptyIcon={<Smartphone size={40} className="text-[#E76F51]" />}
+          emptyTitle="發佈新公告？" emptyDesc="輸入主題與重點，我會幫您變出精美群組公告，並直接預覽手機效果！"
+          headerAvatar="班" headerTitle="二年甲班 家長群組 (28)" headerSubtitle="班級重要事項宣導"
+        >
+          {result && (
+            <div className="space-y-6">
+              {result.concise && <LineBubble type="精簡版" text={result.concise} onRegenerate={() => handleRegenerateAnnouncement('concise', '精簡版公告', '字數極少，保留核心。')} isRegenerating={regeneratingKeys['concise']} />}
+              {result.standard && <LineBubble type="標準版" text={result.standard} onRegenerate={() => handleRegenerateAnnouncement('standard', '標準版公告', '語氣友善不冗長，完整說明。')} isRegenerating={regeneratingKeys['standard']} />}
+            </div>
+          )}
+        </PhonePreview>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 5. 教職員公告 (StaffView)
+// ==========================================
+function StaffView({ role }) {
+  const [topic, setTopic] = useState('');
+  const [points, setPoints] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [regeneratingKeys, setRegeneratingKeys] = useState({});
+
+  const inspirationTags = [
+    { label: '📚 研習資訊', topic: '校內研習', points: '時間：下週三下午\n地點：大會議室\n五前報名' },
+    { label: '📢 行政布達', topic: '期末成績輸入', points: '關閉時間：1/15下午4點\n逾期影響全校結算' },
+  ];
+
+  const handleGenerate = async () => {
+    if (!topic.trim() || !points.trim()) return;
+    setIsGenerating(true);
+    setResult(null);
+    setErrorMsg('');
+
+    try {
+      const prompt = `請幫我撰寫發佈在 LINE【教職員/行政內部群組】的公告。主題：${topic}。重點：${points}。
+      限制：1. 對同事發布，需禮貌專業。2. 去除冗長寒暄，直接切入重點。3. 適度使用 Emoji。
+      【重要限制】：絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。
+      請提供兩種風格：1. formal: 正式條理版(適合行政布達)。2. friendly: 溫馨友善版(適合研習協調，加上感謝)。`;
+      const schema = { type: "OBJECT", properties: { formal: { type: "STRING" }, friendly: { type: "STRING" } }, required: ["formal", "friendly"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      setResult(parsedData);
+    } catch (error) { setErrorMsg("系統繁忙，請稍後再試。"); } finally { setIsGenerating(false); }
+  };
+
+  const handleRegenerateAnnouncement = async (key, typeName, desc) => {
+    setRegeneratingKeys(prev => ({ ...prev, [key]: true }));
+    try {
+      const prompt = `請重新撰寫這篇 LINE【教職員群組】的【${typeName}】公告。主題：${topic}。重點：${points}。限制：${desc}。絕對純文字輸出，請勿使用 Markdown 語法（例如 ** 或 *）。`;
+      const schema = { type: "OBJECT", properties: { reply: { type: "STRING" } }, required: ["reply"] };
+      const parsedData = await fetchFromGemini(prompt, schema);
+      if (parsedData?.reply) setResult(prev => ({ ...prev, [key]: parsedData.reply }));
+    } catch (error) { console.error(error); } finally { setRegeneratingKeys(prev => ({ ...prev, [key]: false })); }
+  };
+
+  const handleClear = () => { setTopic(''); setPoints(''); setResult(null); setErrorMsg(''); setRegeneratingKeys({}); };
+
+  return (
+    <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 h-full">
+      <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-[0_8px_30px_rgb(138,90,68,0.06)] border border-[#F7D8BA]/60 p-6 flex flex-col h-full relative">
+          <div className="flex justify-between items-center mb-6">
+            <label className="font-extrabold text-[#8A5A44] flex items-center gap-2 text-lg"><Users className="text-[#F4A261]" size={24} />設定布達內容</label>
+            {(topic || points) && <button onClick={handleClear} className="text-[#A47E60] hover:text-rose-500 flex items-center gap-1.5 text-sm font-bold bg-white shadow-sm px-3 py-1.5 rounded-full border border-[#F7D8BA]/40"><Trash2 size={14} /> 清空</button>}
+          </div>
+          <div className="space-y-5 flex-1">
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Lightbulb size={16} className="text-[#F4A261]" /><span className="text-xs font-bold text-[#A47E60]">靈感快充</span></div>
+              <div className="flex flex-wrap gap-2">
+                {inspirationTags.map(tag => <button key={tag.label} onClick={() => {setTopic(tag.topic); setPoints(tag.points);}} className="bg-[#FFF9F5] hover:bg-[#FFE8D6] text-[#8A5A44] border border-[#F7D8BA]/60 px-3 py-1.5 rounded-xl text-xs font-bold hover:shadow-sm">{tag.label}</button>)}
+              </div>
+            </div>
+            <div><input type="text" className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-3.5 focus:ring-4 focus:ring-[#F4A261] outline-none text-[#5c4d43] font-bold shadow-sm" placeholder="布達主題..." value={topic} onChange={(e) => setTopic(e.target.value)} /></div>
+            <div><textarea className="w-full bg-white border border-[#F7D8BA]/80 rounded-2xl p-4 focus:ring-4 focus:ring-[#F4A261] outline-none resize-none min-h-[160px] text-[#5c4d43] font-bold shadow-sm custom-scrollbar" placeholder="重點事項..." value={points} onChange={(e) => setPoints(e.target.value)} /></div>
+          </div>
+          <button onClick={handleGenerate} disabled={isGenerating || !topic.trim() || !points.trim()} className="mt-6 w-full bg-gradient-to-br from-[#F4A261] to-[#E76F51] hover:from-[#E76F51] hover:to-[#D65A31] disabled:opacity-50 text-white font-bold py-4 rounded-2xl shadow-md flex justify-center items-center gap-2 text-lg active:scale-95">
+            {isGenerating ? <><Loader2 className="animate-spin" size={24} /> 撰寫中...</> : <><Sparkles size={22} /> 產生布達公告</>}
+          </button>
+        </div>
+      </div>
+      <div className="lg:col-span-7 h-[calc(100vh-200px)] md:h-auto overflow-y-auto pr-1 custom-scrollbar">
+        {errorMsg && <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 mb-4 text-rose-700 flex items-center gap-3"><AlertCircle size={24} /><p className="font-bold text-sm">{errorMsg}</p></div>}
+        <PhonePreview 
+          isEmpty={!result && !isGenerating} isLoading={isGenerating}
+          emptyIcon={<Smartphone size={40} className="text-[#E76F51]" />}
+          emptyTitle="發布內部訊息？" emptyDesc="輸入主題與事項，我會幫您生成專業俐落的行政群組訊息！"
+          headerAvatar="群" headerTitle="教職員工大群組 (105)" headerSubtitle="校內行政布達與研習資訊"
+        >
+          {result && (
+            <div className="space-y-6">
+              {result.formal && <LineBubble type="正式條理版" text={result.formal} onRegenerate={() => handleRegenerateAnnouncement('formal', '正式版', '語氣正式專業。')} isRegenerating={regeneratingKeys['formal']} />}
+              {result.friendly && <LineBubble type="溫馨友善版" text={result.friendly} onRegenerate={() => handleRegenerateAnnouncement('friendly', '溫馨版', '語氣輕鬆，加上感謝。')} isRegenerating={regeneratingKeys['friendly']} />}
+            </div>
+          )}
+        </PhonePreview>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 6. 模板庫 (TemplatesView)
+// ==========================================
+function TemplatesView() {
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const TEMPLATES_DATA = [
+    { title: "作業與學習狀況", items: [{ name: "作業缺交提醒", content: "家長您好，這裡是班級導師。提醒您，孩子這兩天有缺交作業的情形。為了不影響學習進度，想請您今晚協助提醒孩子完成並放進書包，明天帶來學校。謝謝您的配合與協助！" }, { name: "考試成績通知", content: "家長您好，本次的期中考成績已經發放。孩子的考卷已讓孩子帶回，請您撥空檢閱並簽名。若對成績或學習狀況有任何疑問，隨時歡迎與我聯繫討論，我們一起協助孩子進步！" }] },
+    { title: "行為與情緒提醒", items: [{ name: "上課常規違規", content: "家長您好，今天孩子在課堂上有一些違反常規的行為。老師已在當下進行了口頭提醒與引導。希望家長在家也能協助叮嚀上課秩序的重要性，感謝您！" }, { name: "同儕衝突事件", content: "家長您好，今天下課時孩子與同學發生了一些小摩擦。老師已經介入處理，目前孩子們已經互相道歉和好。老師會持續觀察他們的互動，請家長放心。" }] },
+    { title: "出缺勤與健康安全", items: [{ name: "病假關心與補課", content: "家長您好，得知孩子今天生病請假，希望他能多休息、早日康復！今天的作業與上課進度已經更新在班級網頁，等孩子身體好轉後再慢慢補上即可，不用有壓力喔。" }, { name: "傳染病停課通知", content: "家長您好，因班上有學生確診腸病毒/流感，為避免群聚感染，依規定我們班將從明日起停課三天。請家長密切注意孩子的身體狀況，停課期間的線上課程連結將稍後發布，謝謝。" }] },
+    { title: "活動與行政通知", items: [{ name: "校外教學提醒", content: "家長您好，下週三我們班將舉辦校外教學活動。相關的同意書與注意事項已經發下，請您務必在週五前簽名並讓孩子繳回。當天請幫孩子準備輕便服裝與水壺，謝謝配合！" }, { name: "表單填寫催收", content: "家長您好，打擾了！提醒您關於【回條/調查表】的部分，目前尚未收到您的回覆。為利後續行政作業統計，請您協助於明天完成填寫或讓孩子將回條帶回。感謝您的幫忙！" }] }
+  ];
+
+  const handleCopy = () => {
+    if (!selectedTemplate) return;
+    copyToClipboard(selectedTemplate.content, () => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const filteredTemplates = TEMPLATES_DATA.map(cat => ({
+    ...cat, items: cat.items.filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()) || item.content.toLowerCase().includes(searchTerm.toLowerCase()))
+  })).filter(cat => cat.items.length > 0);
+
+  return (
+    <div className="max-w-4xl mx-auto relative h-full flex flex-col">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 md:mb-8 gap-4 shrink-0">
+        <div><h2 className="text-xl md:text-2xl font-extrabold text-[#8A5A44]">常見情境模板庫</h2><p className="text-[#A47E60] font-bold mt-1 text-sm md:text-base">快速點擊套用標準回覆，省去重複打字！</p></div>
+        <div className="relative w-full md:w-72 shrink-0">
+          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><Search size={18} className="text-[#A47E60]" /></div>
+          <input type="text" placeholder="搜尋標題或內容..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-white border-2 border-[#F7D8BA]/80 rounded-full pl-11 pr-4 py-2.5 focus:ring-4 focus:ring-[#F4A261] outline-none text-[#5c4d43] font-bold shadow-sm" />
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar pb-10">
+      {filteredTemplates.length > 0 ? (
+        <div className="space-y-6 md:space-y-8">
+          {filteredTemplates.map((cat, i) => (
+            <div key={i} className="bg-white/90 rounded-3xl shadow-sm border border-[#F7D8BA]/80 overflow-hidden">
+              <div className="bg-[#FFE8D6]/80 px-5 py-3 md:px-6 md:py-4 border-b border-[#F7D8BA]/60 font-extrabold text-[#8A5A44] text-base md:text-lg">{cat.title}</div>
+              <div className="p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+                {cat.items.map((item, j) => (
+                  <div key={j} onClick={() => setSelectedTemplate(item)} className="bg-white border-2 border-[#F7D8BA]/40 rounded-2xl p-4 md:p-5 hover:border-[#F4A261] hover:shadow-md transition-all cursor-pointer group active:scale-95">
+                    <div className="flex justify-between items-start mb-2"><span className="font-extrabold text-[#8A5A44] text-base md:text-lg">{item.name}</span><span className="text-[#F4A261] bg-[#FFF9F5] p-1 rounded-full"><ChevronRight size={18} /></span></div>
+                    <p className="text-sm text-[#A47E60] font-medium line-clamp-2">{item.content}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="bg-white/40 rounded-3xl border-2 border-[#F7D8BA] border-dashed flex flex-col items-center justify-center p-12 text-center mt-6 h-64"><Search size={40} className="text-[#F4A261] mb-4 opacity-50" /><p className="font-extrabold text-lg text-[#8A5A44]">找不到相關模板</p></div>
+      )}
+      </div>
+
+      {selectedTemplate && (
+        <div className="fixed inset-0 bg-[#8A5A44]/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+            <div className="bg-[#FFE8D6] px-5 py-4 md:px-6 flex justify-between items-center border-b border-[#F7D8BA]/60">
+              <h3 className="font-extrabold text-[#8A5A44] text-lg flex items-center gap-2"><FileText size={20} className="text-[#F4A261]" />{selectedTemplate.name}</h3>
+              <button onClick={() => setSelectedTemplate(null)} className="text-[#8A5A44] hover:bg-white p-1.5 rounded-full"><X size={20} /></button>
+            </div>
+            <div className="p-5 md:p-6">
+              <div className="bg-white border-2 border-[#F7D8BA]/40 rounded-2xl p-4 md:p-5 mb-5 max-h-[40vh] overflow-y-auto custom-scrollbar"><p className="text-[#5c4d43] font-medium leading-relaxed whitespace-pre-wrap">{selectedTemplate.content}</p></div>
+              <button onClick={handleCopy} className="w-full bg-[#F4A261] hover:bg-[#E76F51] text-white font-bold py-3.5 rounded-2xl shadow-md flex justify-center items-center gap-2 text-lg active:scale-95">{copied ? <Check size={20} /> : <Copy size={20} />}{copied ? '文字已複製！' : '複製這段文字'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Shared UI Components ---
+
+function PhonePreview({ isEmpty, isLoading, emptyIcon, emptyTitle, emptyDesc, headerAvatar, headerTitle, headerSubtitle, children }) {
+  if (isEmpty && !isLoading) {
+    return (
+      <div className="bg-white/40 rounded-3xl border-2 border-[#F7D8BA] border-dashed h-full min-h-[350px] flex flex-col items-center justify-center text-[#A47E60] p-8 text-center backdrop-blur-sm animate-in fade-in">
+        <div className="bg-gradient-to-br from-[#FFE8D6] to-[#F7D8BA] p-5 rounded-full mb-5 shadow-inner">{emptyIcon}</div>
+        <p className="font-extrabold text-xl text-[#8A5A44]">{emptyTitle}</p>
+        <p className="mt-3 text-sm md:text-base font-medium leading-relaxed max-w-xs">{emptyDesc}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col animate-in fade-in zoom-in-95 duration-500 h-full">
+      <div className="bg-[#8EABC0] rounded-3xl shadow-[0_10px_40px_rgb(0,0,0,0.1)] overflow-hidden flex flex-col h-full border-[6px] border-white relative">
+        <div className="bg-[#2A3744] text-white px-5 py-3 flex items-center gap-3 shrink-0 shadow-sm z-10">
+          <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center font-bold text-lg backdrop-blur-sm">{headerAvatar}</div>
+          <div><h3 className="font-bold text-base leading-tight">{headerTitle}</h3><p className="text-xs text-white/60">{headerSubtitle}</p></div>
+        </div>
+        <div className="p-4 md:p-6 space-y-8 overflow-y-auto flex-1 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-opacity-10 scroll-smooth pb-12 custom-scrollbar">
+          {isLoading ? (
+            <div className="space-y-6">
+              <ChatLoadingSkeleton /><ChatLoadingSkeleton delay="delay-150" />
+            </div>
+          ) : children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatLoadingSkeleton({ delay = "" }) {
+  return (
+    <div className={`flex gap-3 w-full animate-pulse ${delay}`}>
+      <div className="w-10 h-10 rounded-full bg-white/40 shrink-0"></div>
+      <div className="flex flex-col gap-2 w-full max-w-[75%]">
+        <div className="h-4 bg-white/30 rounded-full w-24 mb-1"></div>
+        <div className="relative bg-white/50 p-5 rounded-2xl rounded-tl-sm w-full">
+          <div className="absolute top-0 -left-2 w-3 h-4 bg-white/50 clip-path-polygon-[100%_0,0_0,100%_100%] rounded-tr-sm"></div>
+          <div className="flex gap-1.5 items-center h-4">
+             <div className="w-2 h-2 bg-[#8A5A44]/40 rounded-full animate-bounce"></div>
+             <div className="w-2 h-2 bg-[#8A5A44]/40 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+             <div className="w-2 h-2 bg-[#8A5A44]/40 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SidebarItem({ icon, label, isActive, onClick }) {
+  return (
+    <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all text-[15px] font-bold relative overflow-hidden group ${isActive ? 'bg-gradient-to-r from-[#F4A261] to-[#E76F51] text-white shadow-md' : 'text-[#8A5A44] hover:bg-white/60 hover:shadow-sm'}`}>
+      {isActive && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-white/30 rounded-r-full"></div>}
+      <span className={isActive ? 'text-white' : 'text-[#A47E60] group-hover:text-[#F4A261] transition-colors'}>{icon}</span>{label}
+    </button>
+  );
+}
+
+function MobileNavItem({ icon, label, isActive, onClick }) {
+  return (
+    <button onClick={onClick} className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors min-w-[56px] ${isActive ? 'text-[#F4A261]' : 'text-[#A47E60] hover:text-[#8A5A44]'}`}>
+      <div className={`p-1.5 rounded-full transition-all ${isActive ? 'bg-[#FFE8D6]' : 'bg-transparent'}`}>{icon}</div>
+      <span className={`text-[10px] font-bold ${isActive ? 'text-[#E76F51]' : 'text-[#A47E60]'}`}>{label}</span>
+    </button>
+  );
+}
+
+function ToggleSwitch({ label, checked, onChange }) {
+  return (
+    <label className="flex items-center justify-between cursor-pointer group w-full bg-white px-3 py-2.5 rounded-xl border border-[#F7D8BA]/40 shadow-sm hover:border-[#F4A261]/50 transition-all">
+      <span className="text-sm font-bold text-[#8A5A44] transition-colors">{label}</span>
+      <div className="relative">
+        <input type="checkbox" className="sr-only" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <div className={`block w-10 h-6 rounded-full transition-colors ${checked ? 'bg-[#F4A261]' : 'bg-[#E5E7EB]'}`}></div>
+        <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform shadow-sm ${checked ? 'transform translate-x-4' : ''}`}></div>
+      </div>
+    </label>
+  );
+}
+
+function LineBubble({ type, text, onRegenerate, isRegenerating, onSendToRecord }) {
+  const [copied, setCopied] = useState(false);
+  
+  // 清除可能殘留的星號
+  const displayText = typeof text === 'object' ? JSON.stringify(text) : text;
+  const cleanText = cleanAsterisks(displayText);
+  
+  const handleCopy = () => { copyToClipboard(cleanText, () => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
+
+  return (
+    <div className="flex gap-3 w-full animate-in fade-in slide-in-from-bottom-4">
+      <div className="w-10 h-10 rounded-full bg-[#F4A261] shadow-md flex items-center justify-center shrink-0 border-2 border-white text-white font-bold">我</div>
+      <div className="flex flex-col items-start max-w-[88%] md:max-w-[80%]">
+        <span className="text-[11px] text-[#2A3744]/70 font-bold mb-1 ml-1 bg-white/40 px-2.5 py-0.5 rounded-full backdrop-blur-sm shadow-sm">{type}</span>
+        <div className="relative bg-white text-[#2A3744] p-4 md:p-5 rounded-2xl rounded-tl-sm shadow-sm group">
+          <div className="absolute top-0 -left-2 w-3 h-4 bg-white clip-path-polygon-[100%_0,0_0,100%_100%] rounded-tr-sm"></div>
+          <p className="text-[14px] md:text-[15px] leading-relaxed font-medium whitespace-pre-wrap break-words">{cleanText}</p>
+        </div>
+        <div className="flex items-center gap-2 mt-2 ml-1 flex-wrap">
+          {onRegenerate && (
+            <button onClick={onRegenerate} disabled={isRegenerating} className="flex items-center gap-1 text-xs bg-white/90 hover:bg-white px-3 py-1.5 rounded-full shadow-sm transition-all font-bold active:scale-95 disabled:opacity-70 text-[#8A5A44]">
+              <RefreshCw size={13} className={isRegenerating ? "animate-spin text-[#F4A261]" : "text-[#A47E60]"} />
+              <span>{isRegenerating ? '重寫中' : '換個說法'}</span>
+            </button>
+          )}
+          <button onClick={handleCopy} className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-full shadow-sm transition-all font-bold active:scale-95 ${copied ? 'bg-emerald-500 text-white' : 'bg-white/90 hover:bg-white text-[#8A5A44]'}`}>
+            {copied ? <Check size={13} /> : <Copy size={13} className={copied ? "" : "text-[#A47E60]"} />}
+            {copied ? '已複製' : '一鍵複製'}
+          </button>
+          {onSendToRecord && (
+            <button onClick={onSendToRecord} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full shadow-sm transition-all font-bold active:scale-95 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200">
+              <ClipboardList size={13} />
+              <span>採用並轉入紀錄</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RiskBadge({ level }) {
+  if (level === '高') return <span className="bg-rose-100 text-rose-700 px-3 py-1 rounded-full text-[10px] font-bold border border-rose-200 flex items-center gap-1 shadow-sm"><AlertTriangle size={12}/>高風險</span>;
+  if (level === '中') return <span className="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-[10px] font-bold border border-orange-200 shadow-sm">中風險</span>;
+  return <span className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-[10px] font-bold border border-emerald-200 shadow-sm">低風險</span>;
+}
+
+const getRoleName = (role) => {
+  const map = { homeroom: '導師', subject: '科任', afterschool: '課後班', admin: '行政' };
+  return map[role] || '老師';
+}
+// ==============================================================
+// 👆👆👆 貼到上面為止 👆👆👆
+// ==============================================================
+
+// --- 以下為架構師封裝層 (API 橫幅與系統掛載邏輯) ---
+
+function APIKeyBanner() {
+  const [apiKey, setApiKey] = React.useState(localStorage.getItem('gemini_api_key') || '');
+  const [toast, setToast] = React.useState('');
+  
+  // 監聽來自底層攔截器的錯誤通知
+  React.useEffect(() => {
+    const handleToast = (e) => {
+      setToast(e.detail);
+      setTimeout(() => setToast(''), 4000);
+    };
+    window.addEventListener('show-api-toast', handleToast);
+    return () => window.removeEventListener('show-api-toast', handleToast);
+  }, []);
+
+  const handleSave = (e) => {
+    const val = e.target.value;
+    setApiKey(val);
+    localStorage.setItem('gemini_api_key', val);
+  };
+
+  return (
+    <React.Fragment>
+      <div className="bg-[#2A3744] text-white px-4 py-2.5 flex flex-col md:flex-row items-center justify-between text-sm z-50 shadow-[0_4px_15px_rgba(0,0,0,0.1)] shrink-0 border-b-4 border-[#F4A261]">
+        <div className="flex flex-col md:flex-row items-center gap-3 w-full md:w-auto">
+          <span className="font-extrabold text-[#F4A261] flex items-center gap-1.5 tracking-wide">
+             ⚙️ 系統授權設定
+          </span>
+          <input 
+            type="password" 
+            value={apiKey} 
+            onChange={handleSave} 
+            placeholder="請貼上您的 Gemini API Key..."
+            className="px-4 py-1.5 rounded-full text-gray-800 w-full md:w-72 outline-none focus:ring-2 focus:ring-[#F4A261] text-xs font-bold shadow-inner placeholder:text-gray-400 transition-all"
+          />
+        </div>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-white/70 hover:text-white underline text-xs font-bold transition-colors mt-2 md:mt-0">
+          取得免費 Gemini API Key ↗
+        </a>
+      </div>
+      
+      {toast && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 bg-rose-500 text-white px-6 py-3 rounded-full shadow-2xl z-[9999] flex items-center gap-2 animate-in fade-in slide-in-from-top-4 font-bold text-sm border-2 border-rose-300">
+          <span>⚠️ {toast}</span>
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
+const MainApp = () => {
+  return (
+    <div className="flex flex-col h-[100dvh] w-full overflow-hidden">
+      <APIKeyBanner />
+      <div className="flex-1 overflow-hidden relative w-full">
+        {/* 動態偵測是否成功載入使用者的程式碼 */}
+        {typeof TeacherAIAssistant !== 'undefined' ? <TeacherAIAssistant /> : (
+          <div className="flex flex-col h-full items-center justify-center text-rose-500 font-bold bg-[#FFF5F5] space-y-4 text-center p-8">
+            <span className="text-4xl">🚨</span>
+            <p className="text-xl text-rose-700">找不到主程式組件</p>
+            <p className="text-sm text-rose-600/80 max-w-md leading-relaxed">
+              請確認您已經把 `.txt` 檔案裡所有的內容，精準地貼入 HTML 檔案內的 <b>「👇👇👇 貼上區域 👇👇👇」</b> 之中。
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// 執行 React 渲染
+const root = createRoot(document.getElementById('root'));
+root.render(<MainApp />);
+  </script>
+</body>
+</html>
