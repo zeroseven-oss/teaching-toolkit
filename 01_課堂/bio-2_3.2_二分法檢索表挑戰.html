@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>昆蟲檢索表大挑戰</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        body { font-family: "微軟正黑體", sans-serif; background-color: #f0f8f8; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        
+        /* 介面卡片 */
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); width: 100%; max-width: 1300px; display: none; margin-bottom: 20px; position: relative; }
+        .card.active { display: block; }
+        
+        /* 標題與頂部操作區 */
+        .header-container { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2c5e5e; padding-bottom: 10px; margin-bottom: 20px; }
+        .header-container h2 { color: #2c5e5e; margin: 0; }
+        .btn-info { background: #00bcd4; color: white; border: none; padding: 10px 15px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: 0.2s;}
+        .btn-info:hover { background: #0097a7; transform: scale(1.05); }
+
+        /* 登入區 */
+        .login-box { text-align: center; padding: 40px; }
+        .login-box h1 { color: #2c5e5e; border-bottom: 2px solid #2c5e5e; padding-bottom: 10px; display: inline-block;}
+        .login-box input { padding: 12px; font-size: 18px; margin: 5px; border: 1px solid #ccc; border-radius: 5px; width: 150px;}
+        .btn-primary { background: #4CAF50; color: white; border: none; padding: 15px 30px; font-size: 20px; border-radius: 8px; cursor: pointer; transition: 0.2s; font-weight: bold;}
+        .btn-primary:hover { background: #45a049; transform: scale(1.05); }
+
+        /* 遊戲區域共用排版 */
+        .game-area { display: flex; gap: 20px; flex-direction: row; align-items: flex-start;}
+        .tree-container { flex: 2.5; background: #fafdfd; padding: 20px; border-radius: 10px; border: 1px solid #eee; overflow-x: auto; min-height: 500px; }
+        .bug-container { flex: 1.5; min-width: 420px; background: #fafdfd; padding: 20px; border-radius: 10px; border: 1px solid #eee; text-align: center; }
+        
+        .status-bar { text-align: right; color: #d32f2f; font-weight: bold; font-size: 16px; margin-bottom: 10px; }
+        
+        /* 樹狀圖核心 CSS */
+        ul { display: flex; flex-direction: column; justify-content: center; position: relative; padding-left: 35px; margin: 0; list-style: none; }
+        li { display: flex; align-items: center; position: relative; padding: 12px 0; }
+        li::before { content: ''; position: absolute; top: 50%; left: -35px; width: 35px; border-top: 2px solid #888; }
+        li::after { content: ''; position: absolute; top: 0; bottom: 0; left: -35px; border-left: 2px solid #888; }
+        li:first-child::after { top: 50%; }
+        li:last-child::after { bottom: 50%; }
+        li:first-child:last-child::after { display: none; }
+        .tree-root { padding-left: 0; }
+        .tree-root > li::before, .tree-root > li::after { display: none; }
+        
+        .node { padding: 6px 12px; border: 2px solid #3b7b7b; border-radius: 6px; background-color: #eef7f7; font-weight: bold; font-size: 14px; position: relative; z-index: 2; white-space: nowrap; }
+        .node-content { display: flex; align-items: center; gap: 10px; z-index: 2; position: relative; }
+        
+        /* 第三關解答節點樣式 */
+        .node-answer { padding: 6px 15px; border: 2px solid #4CAF50; border-radius: 6px; background-color: #e8f5e9; font-weight: bold; font-size: 16px; color: #2e7d32; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
+
+        /* 輸入框設定 */
+        .feature-input { padding: 6px 10px; border: 2px solid #8b5a2b; border-radius: 6px; font-size: 14px; width: 110px; background: #fff8eb; font-weight: bold; box-sizing: border-box;}
+        
+        /* 樹狀圖的格子 (Dropzone) */
+        .dropzone { width: 95px; height: 120px; border: 2px dashed #999; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; transition: 0.3s; position: relative; z-index: 2; }
+        .dropzone.hover { border-color: #4CAF50; background: #e8f5e9; transform: scale(1.05); }
+        .dropzone.hidden { display: none; }
+        
+        /* 操作按鈕 */
+        .btn-add { background: #ff9800; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; font-size: 18px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.2s; display: flex; align-items: center; justify-content: center; }
+        .btn-add:hover { transform: scale(1.15); background: #e68a00; }
+        .btn-remove { background: #f44336; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; font-size: 14px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: 0.2s; display: flex; align-items: center; justify-content: center; }
+        .btn-remove:hover { transform: scale(1.15); background: #d32f2f; }
+        .hide-for-capture .btn-add, .hide-for-capture .btn-remove { display: none !important; }
+        
+        /* 昆蟲圖卡設定 */
+        .bug-dock { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 15px; justify-items: center;}
+        .bug { width: 100%; max-width: 190px; box-sizing: border-box; background: #fff; border: 2px solid #ff9800; border-radius: 10px; cursor: grab; display: flex; flex-direction: column; align-items: center; padding: 8px; box-shadow: 0 3px 6px rgba(0,0,0,0.15); user-select: none; }
+        .bug:active { cursor: grabbing; transform: scale(0.95); border-color: #d35400;}
+        .bug-header { font-size: 16px; font-weight: bold; display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 6px; border-bottom: 1px dashed #ccc; padding-bottom: 5px; width: 100%; justify-content: center; color: #d35400;}
+        .bug-image { width: 65px; height: 65px; object-fit: contain; }
+        .bug-features { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; width: 100%; }
+        .bug-features div { background: #fdf3e5; padding: 3px 5px; border-radius: 4px; border: 1px solid #f39c12; font-size: 12px; color: #333; font-weight: bold; line-height: 1.2; text-align: center;}
+
+        .dropzone .bug { width: 85px; height: 110px; padding: 5px; max-width: none;}
+        .dropzone .bug-header { font-size: 14px; margin-bottom: 2px; border: none; flex-direction: column; color: #333;}
+        .dropzone .bug-image { width: 55px; height: 55px; } 
+        .dropzone .bug-features { display: none; }
+        
+        /* 控制按鈕 */
+        .controls { display: flex; gap: 15px; margin-top: 25px; flex-wrap: wrap; justify-content: center; }
+        .btn-action { padding: 12px 20px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; }
+        .btn-action:hover { transform: scale(1.05); }
+        .btn-restart { background: #f44336; color: white; }
+        .btn-next { background: #2196F3; color: white; display: none; }
+        .btn-check { background: #9c27b0; color: white; }
+        
+        /* 第三關互動區設計 */
+        .l3-step-box { background: #fff; padding: 15px; border: 2px solid #00bcd4; border-radius: 8px; margin-top: 15px; text-align: left; box-shadow: 0 2px 8px rgba(0,0,0,0.05); animation: fadeIn 0.5s;}
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* 彈跳視窗 Modal */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); justify-content: center; align-items: center; }
+        .modal-content { background-color: #fefefe; padding: 30px; border-radius: 12px; border: 3px solid #4CAF50; width: 90%; max-width: 650px; box-shadow: 0 5px 20px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;}
+        .modal-content h2 { color: #4CAF50; margin-top: 0; text-align: center; border-bottom: 2px dashed #4CAF50; padding-bottom: 10px;}
+        .modal-content ul { padding-left: 20px; line-height: 1.6; font-size: 17px; display: block; margin-bottom: 15px; color: #333;}
+        .modal-content li { display: list-item; padding: 4px 0; }
+        .modal-content li::before, .modal-content li::after { display: none; }
+        .info-section { margin-bottom: 20px; background: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 5px solid #00bcd4; }
+        .info-section h3 { margin: 0 0 10px 0; color: #00838f; border: none; text-align: left; padding: 0;}
+        .btn-close, .btn-dl { background: #009688; color: white; width: 100%; padding: 15px; font-size: 20px; margin-top: 10px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;}
+        .btn-close { background: #607d8b; }
+        .btn-close:hover { background: #455a64; }
+        .btn-dl:hover { background: #00796b; }
+
+        @media (max-width: 1000px) { 
+            .game-area { flex-direction: column; } 
+            .header-container{ flex-direction: column; gap: 10px;} 
+            .bug-container { min-width: auto; width: 100%; padding: 10px; box-sizing: border-box;}
+        }
+    </style>
+</head>
+<body>
+
+    <div id="infoModal" class="modal">
+        <div class="modal-content">
+            <h2>📖 遊戲說明與生物知識</h2>
+            <div class="info-section" style="border-left-color: #ff9800;">
+                <h3 style="color: #e65100;">🎯 遊戲玩法規則</h3>
+                <ul>
+                    <li><strong>第一關：</strong>觀察右側昆蟲的特徵，將牠們拖拉到左側檢索表正確的空格中。拉錯 3 次會被判定瞎猜，將會全部洗牌重來喔！</li>
+                    <li><strong>第二關：</strong>自製檢索表。點擊「+」新增分支，在格子內輸入特徵條件，最後把昆蟲分配到正確的終點。</li>
+                    <li><strong>第三關：</strong>檢索表極限測試。想一想，新發現的動物都能完美套用現有的檢索表嗎？</li>
+                </ul>
+                <p style="color:#d32f2f; font-weight:bold; font-size:15px; margin-top: 15px;">※注意：系統只會檢查你有沒有完成分類，分類的邏輯是否正確，將由老師親自批閱圖檔喔！</p>
+            </div>
+            <div class="info-section">
+                <h3>📌 什麼是「二分法檢索表」？</h3>
+                <ul>
+                    <li>根據生物的特徵，每次將其分為兩類（例如：有斑點 / 無斑點），不斷往下分，直到每一種生物都被獨立分開。</li>
+                    <li>挑選的特徵必須客觀、明確，不能使用主觀感覺（如：美醜、可不可愛）。</li>
+                </ul>
+            </div>
+            <div class="info-section" style="border-left-color: #4CAF50;">
+                <h3 style="color: #2e7d32;">💡 知識補給站：部位特徵解密</h3>
+                <ul>
+                    <li><strong>腳 (步足)：</strong>用來行走的器官。昆蟲有 6 隻腳（3對），蜘蛛則有 8 隻腳。</li>
+                    <li><strong>角 (觸角)：</strong>長在頭部前方，用來感覺氣味和震動的「雷達」。</li>
+                    <li><strong>犄角 (ㄐㄧ ㄐㄧㄠˇ)：</strong>部分昆蟲頭部或背部向外突出的堅硬構造，用來打鬥或防禦，沒有感覺功能！</li>
+                    <li><strong>大顎：</strong>是口器的一部份，位於頭部兩側，是一對堅硬的、呈鉗狀或片狀的構造，它們負責切割、磨碎食物或防禦攻擊。</li>
+                </ul>
+            </div>
+            <button class="btn-close" onclick="document.getElementById('infoModal').style.display='none'">我知道了！關閉說明</button>
+        </div>
+    </div>
+
+    <div id="login-screen" class="card active">
+        <div class="login-box">
+            <h1>🦗 昆蟲分類檢索表大挑戰</h1>
+            <p>請輸入班級座號與姓名，系統會將你的名字印在作業圖上！</p>
+            <input type="text" id="student-class" placeholder="班級 (例: 101)" required>
+            <input type="text" id="student-number" placeholder="座號 (例: 05)" required>
+            <input type="text" id="student-name" placeholder="姓名 (例: 王小明)" required>
+            <br><br>
+            <button class="btn-primary" onclick="startGame()">開始挑戰</button>
+
+            <br><br>
+            <button class="btn-info" onclick="document.getElementById('infoModal').style.display='flex'">先看遊戲說明與規則</button>
+        </div>
+    </div>
+
+    <div id="level1-screen" class="card">
+        <div class="header-container">
+            <h2>🚩 第一關：猜猜我是誰</h2>
+            <button class="btn-info" onclick="document.getElementById('infoModal').style.display='flex'">📖 查看說明與規則</button>
+        </div>
+        <div class="status-bar" id="l1-status">剩餘容錯次數：3 次 ❤️❤️❤️</div>
+        <div class="game-area">
+            <div class="tree-container">
+                <ul class="tree-root">
+                    <li>
+                        <div class="node">節肢動物</div>
+                        <ul>
+                            <li>
+                                <div class="node">6隻腳</div>
+                                <ul>
+                                    <li><div class="node">有斑點</div>
+                                        <ul>
+                                            <li><div class="node">身形圓</div><ul><li><div class="dropzone l1-drop" data-answer="瓢蟲" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul></li>
+                                            <li><div class="node">身形非圓</div>
+                                                <ul>
+                                                    <li><div class="node">觸角比身體長</div><ul><li><div class="dropzone l1-drop" data-answer="天牛" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul></li>
+                                                    <li><div class="node">觸角沒有比身體長</div><ul><li><div class="dropzone l1-drop" data-answer="虎甲蟲" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul></li>
+                                                </ul>
+                                            </li>
+                                        </ul>
+                                    </li>
+                                    <li><div class="node">無斑點</div>
+                                        <ul>
+                                            <li><div class="node">頭部有犄角</div><ul><li><div class="dropzone l1-drop" data-answer="獨角仙" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul></li>
+                                            <li><div class="node">頭部無犄角</div><ul><li><div class="dropzone l1-drop" data-answer="金龜子" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul></li>
+                                        </ul>
+                                    </li>
+                                </ul>
+                            </li>
+                            <li>
+                                <div class="node">非6隻腳</div>
+                                <ul><li><div class="dropzone l1-drop" data-answer="蜘蛛" ondrop="dropL1(event)" ondragover="allowDrop(event)"></div></li></ul>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+            <div class="bug-container">
+                <h3 style="margin-bottom: 5px;">待分類區</h3>
+                <p style="font-size:14px; color:#d32f2f; margin-top:0;">請小心觀察特徵！亂猜超過3次將重置。</p>
+                <div class="bug-dock" id="dock-l1" ondrop="dropBack(event, 'dock-l1')" ondragover="allowDrop(event)"></div>
+                <div class="controls">
+                    <button class="btn-action btn-next" id="btn-next-l2" onclick="goToLevel2()">➡️ 進入第二關</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="level2-screen" class="card">
+        <div class="header-container">
+            <h2>🛠️ 第二關：自製檢索表</h2>
+            <button class="btn-info" onclick="document.getElementById('infoModal').style.display='flex'">📖 查看說明與規則</button>
+        </div>
+        <div class="game-area">
+            <div class="tree-container" id="capture-area">
+                <ul class="tree-root" id="dynamic-tree">
+                    <li>
+                        <div class="node-content">
+                            <div class="node" style="background:#8b5a2b; color:white;">節肢動物</div>
+                            <div class="dropzone l2-drop" ondrop="dropL2(event)" ondragover="allowDrop(event)"></div>
+                            <button class="btn-add" onclick="addBranch(this)" title="新增分支">+</button>
+                            <button class="btn-remove" onclick="removeBranch(this)" style="display:none;" title="刪除此分支">🗑️</button>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+            <div class="bug-container">
+                <h3 style="margin-bottom: 5px;">待分類區</h3>
+                <div class="bug-dock" id="dock-l2" ondrop="dropBack(event, 'dock-l2')" ondragover="allowDrop(event)"></div>
+                <div class="controls">
+                    <button class="btn-action btn-restart" onclick="resetLevel2()">🔄 洗牌與重置</button>
+                    <button class="btn-action btn-check" onclick="checkLevel2()">✅ 檢查完成</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="level3-screen" class="card">
+        <div class="header-container">
+            <h2>🏆 第三關：分類範疇反思挑戰</h2>
+            <button class="btn-info" onclick="document.getElementById('infoModal').style.display='flex'">📖 查看說明與規則</button>
+        </div>
+
+        <div class="game-area">
+            <div class="tree-container" style="flex: 2; padding: 20px 40px;">
+                <p style="font-weight: bold; color: #00796b; margin-top: 0; font-size: 18px; text-align: center;">📋 第一關的完整檢索表</p>
+                <ul class="tree-root">
+                    <li>
+                        <div class="node">節肢動物</div>
+                        <ul>
+                            <li>
+                                <div class="node">6隻腳</div>
+                                <ul>
+                                    <li><div class="node">有斑點</div>
+                                        <ul>
+                                            <li><div class="node">身形圓</div><ul><li><div class="node-answer">瓢蟲</div></li></ul></li>
+                                            <li><div class="node">身形非圓</div>
+                                                <ul>
+                                                    <li><div class="node">觸角比身體長</div><ul><li><div class="node-answer">天牛</div></li></ul></li>
+                                                    <li><div class="node">觸角沒有比身體長</div><ul><li><div class="node-answer">虎甲蟲</div></li></ul></li>
+                                                </ul>
+                                            </li>
+                                        </ul>
+                                    </li>
+                                    <li><div class="node">無斑點</div>
+                                        <ul>
+                                            <li><div class="node">頭部有犄角</div><ul><li><div class="node-answer">獨角仙</div></li></ul></li>
+                                            <li><div class="node">頭部無犄角</div><ul><li><div class="node-answer">金龜子</div></li></ul></li>
+                                        </ul>
+                                    </li>
+                                </ul>
+                            </li>
+                            <li>
+                                <div class="node">非6隻腳</div>
+                                <ul><li><div class="node-answer">蜘蛛</div></li></ul>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+            
+            <div class="bug-container" style="flex: 1; display: flex; flex-direction: column; align-items: center;">
+                <h3 style="margin-bottom: 5px;">待分類動物</h3>
+                <div style="background: #fff; padding: 15px; border-radius: 12px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); border: 2px solid #ff9800; margin-bottom: 20px;">
+                    <img id="l3-mystery-img" src="" alt="待分類動物" style="width: 140px; height: 140px; object-fit: contain;">
+                </div>
+
+                <div id="l3-step1" class="l3-step-box" style="width: 100%; box-sizing: border-box;">
+                    <p style="margin-top:0; font-weight:bold; color:#333; font-size:16px;">❓ 請觀察這隻動物，如果硬要把牠套用在左邊的檢索表，你覺得牠會被分到哪一隻動物的位置（跟哪一隻動物像）？</p>
+                    <select id="l3-sim-select" class="feature-input" style="width: 100%; font-size: 16px; padding: 10px;" onchange="showL3Step2()">
+                        <option value="" disabled selected>請選擇相似的動物...</option>
+                        <option value="瓢蟲">瓢蟲</option>
+                        <option value="天牛">天牛</option>
+                        <option value="虎甲蟲">虎甲蟲</option>
+                        <option value="獨角仙">獨角仙</option>
+                        <option value="金龜子">金龜子</option>
+                        <option value="蜘蛛">蜘蛛</option>
+                    </select>
+                </div>
+
+                <div id="l3-step2" class="l3-step-box" style="width: 100%; box-sizing: border-box; display: none; border-color: #9c27b0;">
+                    <p style="margin-top:0; font-weight:bold; color:#333; font-size:16px;">🤔 你覺得這隻待分類動物，跟被套用的那隻動物「<span style="color:#9c27b0;">真的相似嗎</span>」？</p>
+                    <div style="display: flex; gap: 15px; justify-content: center; margin-top: 15px;">
+                        <button class="btn-action" style="background:#4CAF50; color:white; width:100%;" onclick="showL3Step3()">相似</button>
+                        <button class="btn-action" style="background:#f44336; color:white; width:100%;" onclick="showL3Step3()">不相似</button>
+                    </div>
+                </div>
+
+                <div id="l3-step3" class="l3-step-box" style="width: 100%; box-sizing: border-box; display: none; background: #fff3e0; border-color: #ff9800;">
+                    <p style="margin:0; font-weight:bold; color:#d32f2f; font-size:17px; line-height: 1.6;">
+                        💡 製作檢索表時並未納入此動物，所以會不相似，由此可知檢索表有其<span style="background: yellow;">分類範疇</span>，並非適用於所有生物！
+                    </p>
+                    <button class="btn-action btn-check" style="width: 100%; margin-top: 15px;" onclick="finishLevel3()">✅ 完成挑戰</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="summaryModal" class="modal">
+        <div class="modal-content">
+            <h2 style="color: #4CAF50;">🎉 恭喜全部通關！</h2>
+            
+            <div style="background: #e8f5e9; padding: 15px; border-left: 5px solid #4CAF50; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+                <h3 style="margin-top: 0; color: #2e7d32;">👩‍🏫 老師的點評：</h3>
+                <p style="font-size: 16px; color: #333; line-height: 1.6;">
+                    太棒了！透過第三關你發現了嗎？如果遇到「原本沒有被設定在檢索表內」的新生物，硬套進去往往會得到荒謬的結果！<br>
+                    這告訴我們，<strong>科學分類工具（如檢索表）都有其特定的「適用範圍」</strong>，這也是生物學家在發現新物種時，需要不斷更新、修訂檢索表的原因喔！
+                </p>
+            </div>
+
+            <p style="text-align:center; font-size:18px; color:#333; font-weight: bold;">點擊下方按鈕，系統會將你「第二關自製的樹狀圖」轉換成圖片檔案繳交給老師。</p>
+            <button class="btn-dl" onclick="downloadImage()">📥 點此下載第二關檢索表圖片 (繳交作業)</button>
+            <button class="btn-close" style="margin-top: 10px;" onclick="document.getElementById('summaryModal').style.display='none'">再回顧一下</button>
+        </div>
+    </div>
+
+    <script>
+        // 音效系統
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(type) {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode); gainNode.connect(audioCtx.destination);
+            if (type === 'success') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(600, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+            } else if (type === 'error') {
+                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.3);
+                gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime); gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+            }
+        }
+
+        let studentData = "";
+        let mistakes = 0;
+        const maxMistakes = 3;
+        
+        // 設定圖片直接讀取 GitHub 目錄底下的 image/ 資料夾
+        let bugsData = [
+            { id: "b1", name: "金龜子", img: "image/b1_金龜子.png", features: ["6隻腳(步足)", "腳上有細毛",  "2個（複）眼", "鰓葉狀觸角", "觸角比身體短", "大顎不明顯", "沒有犄角", "身形長形", "身上沒有斑點"] },
+            { id: "b2", name: "蜘蛛", img: "image/b2_蜘蛛.png", features: ["8隻腳(步足)", "腳上沒有細毛", "8個單眼",  "無觸角",  "沒有犄角", "身形不規則", "身上沒有斑點"] },
+            { id: "b3", name: "天牛", img: "image/b3_天牛.png", features: ["6隻腳(步足)", "腳上沒有細毛",  "2個（複）眼", "長鞭狀觸角", "觸角比身體長", "大顎不明顯", "沒有犄角",  "身形狹長", "身上有數個斑點"] },
+            { id: "b4", name: "瓢蟲", img: "image/b4_瓢蟲", features: ["6隻腳(步足)", "腳上沒有細毛", "2個（複）眼", "短鞭狀觸角", "觸角比身體短", "大顎不明顯", "沒有犄角", "身形圓", "身上有數個斑點"] },
+            { id: "b5", name: "獨角仙", img: "image/b5_獨角仙.png", features: ["6隻腳(步足)", "雄性腳上無細毛",  "2個（複）眼", "鰓葉狀觸角", "觸角比身體短", "大顎不明顯", "頭部有犄角突起", "身形長形", "身上沒有斑點"] },
+            { id: "b6", name: "虎甲蟲", img: "image/b6_虎甲蟲", features: ["6隻腳(步足)", "腳上沒有細毛",  "2個（複）眼", "長鞭狀觸角", "觸角比身體短", "大顎巨大", "沒有犄角", "身形狹長", "身上有數個斑點"] }
+        ];
+
+        // 第三關：待分類動物的圖片路徑
+        let mysteryBugImg = "image/mystery_待分類動物.png";
+
+        function startGame() {
+            let c = document.getElementById('student-class').value.trim();
+            let num = document.getElementById('student-number').value.trim();
+            let n = document.getElementById('student-name').value.trim();
+            if(!c || !num || !n) { alert("請填寫完整的班級、座號與姓名喔！"); return; }
+            studentData = `${c}_${num}_${n}`;
+            
+            document.getElementById('infoModal').style.display = 'flex';
+            document.getElementById('login-screen').classList.remove('active');
+            document.getElementById('level1-screen').classList.add('active');
+            playSound('success'); resetLevel1();
+        }
+
+        function goToLevel2() {
+            document.getElementById('level1-screen').classList.remove('active');
+            document.getElementById('level2-screen').classList.add('active');
+            resetLevel2();
+        }
+
+        function generateBugs(dockId, prefix) {
+            const dock = document.getElementById(dockId);
+            dock.innerHTML = '';
+            
+            let shuffled = [...bugsData].sort(() => Math.random() - 0.5);
+            shuffled.forEach(bug => {
+                let div = document.createElement('div');
+                div.className = 'bug';
+                div.id = `${prefix}-${bug.id}`;
+                div.draggable = true;
+                div.ondragstart = drag;
+                div.setAttribute('data-name', bug.name);
+                let featureHtml = bug.features.map(f => `<div>${f}</div>`).join('');
+                
+                div.innerHTML = `<div class="bug-header"><img src="${bug.img}" class="bug-image" alt="${bug.name}" onerror="this.src=''"> ${bug.name}</div><div class="bug-features">${featureHtml}</div>`;
+                dock.appendChild(div);
+            });
+        }
+
+        let draggedId = "";
+        function allowDrop(ev) { ev.preventDefault(); if(ev.target.classList.contains("dropzone")) ev.target.classList.add("hover"); }
+        document.addEventListener("dragleave", function(ev) { if(ev.target.classList.contains("dropzone")) ev.target.classList.remove("hover"); });
+        function drag(ev) { draggedId = ev.currentTarget.id; }
+        
+        function dropBack(ev, dockId) {
+            ev.preventDefault();
+            if (ev.target.id === dockId || ev.target.closest(`#${dockId}`)) {
+                document.getElementById(dockId).appendChild(document.getElementById(draggedId));
+                playSound('success');
+            }
+        }
+
+        function updateMistakesUI() {
+            let lives = maxMistakes - mistakes;
+            document.getElementById('l1-status').innerText = `剩餘容錯次數：${lives} 次 ${'❤️'.repeat(lives)}${'🖤'.repeat(mistakes)}`;
+        }
+
+        function resetLevel1() {
+            mistakes = 0; updateMistakesUI();
+            document.querySelectorAll('.l1-drop').forEach(zone => { zone.innerHTML = ''; zone.style.borderColor = "#999"; zone.style.backgroundColor = "#fff"; });
+            generateBugs('dock-l1', 'l1');
+            document.getElementById('btn-next-l2').style.display = 'none';
+        }
+
+        function dropL1(ev) {
+            ev.preventDefault();
+            var targetZone = ev.currentTarget;
+            targetZone.classList.remove("hover"); 
+            if(!targetZone.classList.contains("dropzone") || targetZone.hasChildNodes()) return;
+            
+            let draggedEl = document.getElementById(draggedId);
+            let expected = targetZone.getAttribute("data-answer");
+            let studentAns = draggedEl.getAttribute("data-name");
+
+            if (expected === studentAns) {
+                targetZone.appendChild(draggedEl);
+                targetZone.style.borderColor = "#4CAF50"; targetZone.style.backgroundColor = "#e8f5e9";
+                playSound('success');
+                if (document.getElementById('dock-l1').children.length === 0) {
+                    setTimeout(() => alert("🎉 太棒了！第一關完成，可以進入第二關囉！"), 300);
+                    document.getElementById('btn-next-l2').style.display = 'inline-block';
+                }
+            } else {
+                playSound('error'); mistakes++; updateMistakesUI();
+                if (mistakes >= maxMistakes) {
+                    setTimeout(() => { alert("🚨 喔喔！錯誤超過 3 次！系統判定有亂猜嫌疑，檢索表將重置！"); resetLevel1(); }, 100);
+                } else {
+                    alert("❌ 不對喔！扣除一次生命值，請再仔細觀察特徵！");
+                }
+            }
+        }
+
+        function resetLevel2() {
+            const root = document.getElementById('dynamic-tree');
+            root.innerHTML = `<li><div class="node-content"><div class="node" style="background:#8b5a2b; color:white;">節肢動物</div><div class="dropzone l2-drop" ondrop="dropL2(event)" ondragover="allowDrop(event)"></div><button class="btn-add" onclick="addBranch(this)" title="新增分支">+</button><button class="btn-remove" onclick="removeBranch(this)" style="display:none;" title="刪除此分支">🗑️</button></div></li>`;
+            generateBugs('dock-l2', 'l2');
+        }
+
+        function dropL2(ev) {
+            ev.preventDefault();
+            var targetZone = ev.currentTarget;
+            targetZone.classList.remove("hover"); 
+            if(!targetZone.classList.contains("dropzone") || targetZone.hasChildNodes()) return;
+            targetZone.appendChild(document.getElementById(draggedId));
+            playSound('success');
+        }
+
+        function addBranch(btn) {
+            var nodeContent = btn.parentElement;
+            var dropzone = nodeContent.querySelector('.dropzone');
+            if(dropzone.hasChildNodes()) { playSound('error'); alert("請先將昆蟲移出，才能繼續新增分支喔！"); return; }
+            
+            dropzone.classList.add("hidden"); 
+            btn.style.display = "none";
+            
+            var removeBtn = nodeContent.querySelector('.btn-remove');
+            if(removeBtn) removeBtn.style.display = "flex";
+            
+            var ul = document.createElement("ul");
+            ul.innerHTML = `
+                <li><div class="node-content"><input type="text" class="feature-input" placeholder="輸入特徵..."><div class="dropzone l2-drop" ondrop="dropL2(event)" ondragover="allowDrop(event)"></div><button class="btn-add" onclick="addBranch(this)" title="新增分支">+</button><button class="btn-remove" onclick="removeBranch(this)" style="display:none;" title="刪除此分支">🗑️</button></div></li>
+                <li><div class="node-content"><input type="text" class="feature-input" placeholder="輸入特徵..."><div class="dropzone l2-drop" ondrop="dropL2(event)" ondragover="allowDrop(event)"></div><button class="btn-add" onclick="addBranch(this)" title="新增分支">+</button><button class="btn-remove" onclick="removeBranch(this)" style="display:none;" title="刪除此分支">🗑️</button></div></li>`;
+            nodeContent.parentElement.appendChild(ul);
+            playSound('success');
+        }
+
+        function removeBranch(btn) {
+            var nodeContent = btn.parentElement;
+            var li = nodeContent.parentElement;
+            var ulToRemove = li.querySelector('ul'); 
+            
+            if (ulToRemove) {
+                var bugs = ulToRemove.querySelectorAll('.bug');
+                var dock = document.getElementById('dock-l2');
+                bugs.forEach(bug => dock.appendChild(bug));
+                ulToRemove.remove(); 
+            }
+            
+            nodeContent.querySelector('.dropzone').classList.remove("hidden");
+            nodeContent.querySelector('.btn-add').style.display = "flex";
+            btn.style.display = "none"; 
+            
+            playSound('error'); 
+        }
+
+        // 第二關過關檢查並進入第三關
+        function checkLevel2() {
+            var dock = document.getElementById("dock-l2");
+            var inputs = document.querySelectorAll('#level2-screen .feature-input');
+            var activeDropzones = document.querySelectorAll('#level2-screen .dropzone:not(.hidden)');
+            
+            for(var i=0; i<inputs.length; i++) {
+                if(inputs[i].value.trim() === "") { playSound('error'); alert("❌ 有特徵格子沒寫喔！"); inputs[i].focus(); return; }
+            }
+            if (dock.children.length > 0) { playSound('error'); alert("❌ 待分類區還有昆蟲未分類完成！"); return; }
+            for(var j=0; j<activeDropzones.length; j++) {
+                if(!activeDropzones[j].hasChildNodes()) { playSound('error'); alert("❌ 有分支終點是空的！每個終點都要放一隻昆蟲！"); return; }
+            }
+            
+            playSound('success');
+            alert("✅ 第二關檢查通過！準備進入最終的第三關反思挑戰！");
+            
+            // 隱藏第二關，開啟第三關
+            document.getElementById('level2-screen').classList.remove('active');
+            document.getElementById('level3-screen').classList.add('active');
+            
+            // 初始化第三關互動區
+            initLevel3UI();
+        }
+
+        // ⭐️ 第三關互動邏輯 ⭐️
+        function initLevel3UI() {
+            // 載入待分類動物圖片
+            document.getElementById('l3-mystery-img').src = mysteryBugImg;
+            
+            // 重置區塊顯示
+            document.getElementById('l3-step1').style.display = 'block';
+            document.getElementById('l3-step2').style.display = 'none';
+            document.getElementById('l3-step3').style.display = 'none';
+            document.getElementById('l3-sim-select').value = "";
+            
+            // 重置步驟二的按鈕狀態
+            const buttons = document.getElementById('l3-step2').querySelectorAll('button');
+            buttons.forEach(btn => {
+                btn.style.opacity = "1";
+                btn.disabled = false;
+            });
+        }
+
+        function showL3Step2() {
+            if (document.getElementById('l3-sim-select').value !== "") {
+                document.getElementById('l3-step2').style.display = 'block';
+                playSound('success');
+            }
+        }
+
+        function showL3Step3() {
+            document.getElementById('l3-step3').style.display = 'block';
+            
+            // 讓步驟二的按鈕變暗，表示已選擇
+            const buttons = document.getElementById('l3-step2').querySelectorAll('button');
+            buttons.forEach(btn => {
+                btn.style.opacity = "0.5";
+                btn.disabled = true;
+            });
+            playSound('success');
+        }
+
+        function finishLevel3() {
+            document.getElementById('summaryModal').style.display = 'flex';
+            playSound('success');
+        }
+
+        // 下載截圖功能 (下載第二關的自製圖)
+        function downloadImage() {
+            const level2 = document.getElementById('level2-screen');
+            const level3 = document.getElementById('level3-screen');
+            level3.style.display = 'none'; 
+            level2.classList.add('active'); 
+
+            const captureArea = document.getElementById('capture-area');
+            const modal = document.getElementById('summaryModal');
+            
+            const titleStamp = document.createElement('h2');
+            titleStamp.id = "temp-stamp";
+            titleStamp.style.cssText = "color: #8b5a2b; text-align: center; margin-bottom: 20px;";
+            titleStamp.innerText = `${studentData.replace(/_/g, " ")} 的檢索表作業`;
+            captureArea.insertBefore(titleStamp, captureArea.firstChild);
+            
+            captureArea.classList.add('hide-for-capture');
+
+            const inputs = captureArea.querySelectorAll('.feature-input');
+            inputs.forEach(input => {
+                const div = document.createElement('div');
+                div.className = 'temp-input-text';
+                div.innerText = input.value || "未輸入";
+                div.style.cssText = "padding: 6px 10px; border: 2px solid #8b5a2b; border-radius: 6px; font-size: 14px; background: #fff8eb; font-weight: bold; display: inline-block; min-width: 80px; text-align: center;";
+                input.style.display = 'none';
+                input.parentNode.insertBefore(div, input);
+            });
+
+            const originalOverflow = captureArea.style.overflowX;
+            captureArea.style.overflowX = 'visible';
+            captureArea.style.width = 'max-content';
+
+            html2canvas(captureArea, { backgroundColor: "#fafdfd", scale: 2 }).then(canvas => {
+                let link = document.createElement('a');
+                link.download = `${studentData}_檢索表作業.png`;
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+                
+                captureArea.removeChild(document.getElementById('temp-stamp'));
+                captureArea.classList.remove('hide-for-capture');
+                
+                const tempDivs = captureArea.querySelectorAll('.temp-input-text');
+                tempDivs.forEach(div => div.remove());
+                inputs.forEach(input => input.style.display = 'inline-block');
+                
+                captureArea.style.overflowX = originalOverflow;
+                captureArea.style.width = 'auto';
+
+                modal.style.display = 'none'; 
+                
+                level2.classList.remove('active');
+                level3.style.display = 'block';
+                
+                alert("✅ 下載完成！請將圖片檔上傳繳交給老師！");
+            });
+        }
+    </script>
+</body>
+</html>
