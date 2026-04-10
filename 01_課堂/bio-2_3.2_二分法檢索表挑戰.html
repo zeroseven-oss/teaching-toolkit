@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>昆蟲檢索表大挑戰</title>
+    <title>節肢動物檢索表大挑戰</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
         body { font-family: "微軟正黑體", sans-serif; background-color: #f0f8f8; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
@@ -100,7 +100,7 @@
         .btn-remove:hover { transform: scale(1.15); background: #d32f2f; }
         .hide-for-capture .btn-add, .hide-for-capture .btn-remove { display: none !important; }
         
-        /* 昆蟲圖卡設定 */
+        /* 節肢動物圖卡設定 */
         .bug-dock { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 15px; justify-items: center;}
         .bug { width: 100%; max-width: 190px; box-sizing: border-box; background: #fff; border: 2px solid #ff9800; border-radius: 10px; cursor: grab; display: flex; flex-direction: column; align-items: center; padding: 8px; box-shadow: 0 3px 6px rgba(0,0,0,0.15); user-select: none; }
         .bug:active { cursor: grabbing; transform: scale(0.95); border-color: #d35400;}
@@ -173,8 +173,8 @@
             <div class="info-section" style="border-left-color: #ff9800; background-color: #fffde7;">
                 <h3 style="color: #e65100; border-bottom-color: #ffe0b2;">🎯 遊戲玩法規則</h3>
                 <ul style="list-style-type: square; color: #333;">
-                    <li><strong style="color: #d32f2f;">第一關：</strong>觀察右側昆蟲特徵，將牠們拖拉到左側檢索表正確的空格中。拉錯 3 次會被判定瞎猜，將會全部洗牌重來喔！</li>
-                    <li><strong style="color: #1976d2;">第二關：</strong>自製檢索表。點擊「+」新增分支，在格子內輸入特徵條件，最後把昆蟲分配到正確的終點。</li>
+                    <li><strong style="color: #d32f2f;">第一關：</strong>觀察右側節肢動物特徵，將牠們拖拉到左側檢索表正確的空格中。拉錯 3 次會被判定瞎猜，將會全部洗牌重來喔！</li>
+                    <li><strong style="color: #1976d2;">第二關：</strong>自製檢索表。點擊「+」新增分支，在格子內輸入特徵條件，最後把節肢動物分配到正確的終點。</li>
                     <li><strong style="color: #388e3c;">第三關：</strong>檢索表極限測試。想一想，新發現的動物都能完美套用現有的檢索表嗎？</li>
                 </ul>
                 <div style="background: #ffcdd2; color:#b71c1c; font-weight:bold; font-size:15px; margin-top: 15px; padding: 10px; border-radius: 6px; text-align: center;">
@@ -243,7 +243,7 @@
 
     <div id="login-screen" class="card active">
         <div class="login-box">
-            <h1>🦗 昆蟲分類檢索表大挑戰</h1>
+            <h1>🦗 節肢動物分類檢索表大挑戰</h1>
             
             <div class="reminder-box">
                 📝 課前提醒：請準備「活動記錄簿」，並配合完成「實驗3.2 製作簡易分類檢索表」！
@@ -606,7 +606,7 @@
         function addBranch(btn) {
             var nodeContent = btn.parentElement;
             var dropzone = nodeContent.querySelector('.dropzone');
-            if(dropzone.hasChildNodes()) { playSound('error'); alert("請先將昆蟲移出，才能繼續新增分支喔！"); return; }
+            if(dropzone.hasChildNodes()) { playSound('error'); alert("請先將節肢動物移出，才能繼續新增分支喔！"); return; }
             
             dropzone.classList.add("hidden"); 
             btn.style.display = "none";
@@ -649,9 +649,9 @@
             for(var i=0; i<inputs.length; i++) {
                 if(inputs[i].value.trim() === "") { playSound('error'); alert("❌ 有特徵格子沒寫喔！"); inputs[i].focus(); return; }
             }
-            if (dock.children.length > 0) { playSound('error'); alert("❌ 待分類區還有昆蟲未分類完成！"); return; }
+            if (dock.children.length > 0) { playSound('error'); alert("❌ 待分類區還有節肢動物未分類完成！"); return; }
             for(var j=0; j<activeDropzones.length; j++) {
-                if(!activeDropzones[j].hasChildNodes()) { playSound('error'); alert("❌ 有分支終點是空的！每個終點都要放一隻昆蟲！"); return; }
+                if(!activeDropzones[j].hasChildNodes()) { playSound('error'); alert("❌ 有分支終點是空的！每個終點都要放一隻節肢動物！"); return; }
             }
             
             playSound('success');
